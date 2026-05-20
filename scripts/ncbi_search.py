@@ -13,6 +13,9 @@ Supported databases:
 - snp: SNP variants
 - clinvar: Clinical variants
 - taxonomy: Taxonomy
+- biosample: Biological samples
+- assembly: Genome assemblies
+- sra: Sequence Read Archive
 
 Usage:
     python ncbi_search.py "your query" [options]
@@ -23,26 +26,23 @@ Usage:
 import os
 import sys
 import json
-import time
 import argparse
 import re
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any
 
+# Ensure we can import ncbi_utils from the same directory
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
-    import requests
-    from requests.adapters import HTTPAdapter
-    from urllib3.util.retry import Retry
+    from ncbi_utils import http_get
 except ImportError:
-    print("Error: requests library required. Install with: pip install requests")
+    print("Error: Could not import ncbi_utils.py from the scripts directory.", file=sys.stderr)
     sys.exit(1)
 
 # NCBI E-Utilities Base URLs
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 ESEARCH_URL = f"{EUTILS_BASE}/esearch.fcgi"
 ESUMMARY_URL = f"{EUTILS_BASE}/esummary.fcgi"
-EFETCH_URL = f"{EUTILS_BASE}/efetch.fcgi"
-ELINK_URL = f"{EUTILS_BASE}/elink.fcgi"
 
 # Database configurations
 DATABASES = {
@@ -122,31 +122,19 @@ DATABASES = {
     },
 }
 
-# Known gene symbols
+# Known gene symbols (commonly referenced in neuroscience & cancer)
 GENE_SYMBOLS = [
     "APOE", "APP", "PSEN1", "PSEN2", "TREM2", "MAPT", "SNCA", "TARDBP",
     "BRCA1", "BRCA2", "TP53", "EGFR", "KRAS", "MYC", "PTEN", "VEGF",
     "IL6", "TNF", "IFNG", "IL1B", "IL10", "TGFB1", "BDNF", "NGF",
 ]
 
-# Rate limiting
-LAST_REQUEST_TIME = 0
-MIN_REQUEST_INTERVAL = 0.34
-SESSION = None
-
-
-def create_session():
-    """Create a session with retry logic."""
-    session = requests.Session()
-    retry_strategy = Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504],
-    )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
+# Academic stop words that look like genes but are not
+ACADEMIC_STOP_WORDS = {
+    "DNA", "RNA", "PCR", "SNP", "SRA", "PMID", "DOI", "URL", "PDF", 
+    "AND", "OR", "NOT", "VS", "THE", "GENE", "GENOME", "CELL", "BODY", "N/A",
+    "COVID", "COVID-19", "SARS", "SARS-COV-2", "MERS", "HIV"
+}
 
 
 def get_api_key(args: argparse.Namespace) -> Optional[str]:
@@ -156,42 +144,84 @@ def get_api_key(args: argparse.Namespace) -> Optional[str]:
     return os.environ.get("NCBI_API_KEY")
 
 
-def rate_limit(api_key: Optional[str]):
-    """Enforce rate limiting."""
-    global LAST_REQUEST_TIME
-    interval = 0.11 if api_key else MIN_REQUEST_INTERVAL
-    elapsed = time.time() - LAST_REQUEST_TIME
-    if elapsed < interval:
-        time.sleep(interval - elapsed)
-    LAST_REQUEST_TIME = time.time()
-
-
 def detect_database(query: str) -> str:
     """
     Detect which NCBI database to search based on query.
     
     Priority:
     1. rs number pattern -> snp
-    2. Gene symbols -> gene
-    3. Database keywords
-    4. Default -> pubmed
+    2. VCV number pattern (ClinVar variant) -> clinvar
+    3. Known Gene symbols (explicit match) -> gene / pubmed (if has paper keywords)
+    4. Database keywords matching (non-pubmed high specificity keywords)
+    5. General Gene symbol pattern (regex match) -> gene / pubmed
+    6. Default -> pubmed
     """
     query_lower = query.lower()
     
-    # Check for rs number (SNP)
+    # 1. Check for rs number (dbSNP)
     if re.search(r'\brs\d+\b', query_lower):
         return "snp"
+        
+    # 2. Check for ClinVar variant identifier (e.g. VCV000242862)
+    if re.search(r'\bVCV\d+\b', query, re.IGNORECASE):
+        return "clinvar"
     
-    # Check for gene symbols
-    words = re.findall(r'\b\w+\b', query)
+    # Common literature keywords used for routing
+    literature_keywords = [
+        "paper", "article", "review", "journal", "study", "trial", "trials", "clinical",
+        "文献", "论文", "文章", "研究", "综述", "临床", "试验"
+    ]
+    
+    # 3. Check for Known Gene Symbols (Explicit match)
+    words = re.findall(r'\b[A-Za-z][A-Za-z0-9-]{1,8}\b', query)
+    has_known_gene = False
     for word in words:
         if word.upper() in GENE_SYMBOLS:
-            # If combined with paper keywords, still use pubmed
-            if any(kw in query_lower for kw in ["paper", "article", "review", "论文", "文献"]):
-                return "pubmed"
-            return "gene"
+            has_known_gene = True
+            break
+    if has_known_gene:
+        if any(kw in query_lower for kw in literature_keywords):
+            return "pubmed"
+        return "gene"
+        
+    # 4. Check database keywords (focus on specific ones)
+    db_scores = {}
+    for db_name, db_info in DATABASES.items():
+        if db_name == "pubmed":
+            continue  # PubMed is default fallback, only evaluate specific DBs here
+        score = 0
+        for keyword in db_info["keywords"]:
+            if keyword in query_lower:
+                score += 1
+        if score > 0:
+            db_scores[db_name] = score
+            
+    if db_scores:
+        # Return highest scoring specific database
+        return max(db_scores, key=db_scores.get)
+        
+    # 5. Check for General Gene Symbols (Regex match)
+    has_potential_gene = False
+    for word in words:
+        word_upper = word.upper()
+        # Pattern A: 4-8 chars (e.g. BRCA1, SHANK3)
+        is_pattern_a = re.match(r'^[A-Z][A-Z0-9-]{3,7}$', word_upper)
+        # Pattern B: 3 chars but containing digit (e.g. P53, IL6)
+        is_pattern_b = re.match(r'^[A-Z][A-Z0-9-]{2}$', word_upper) and any(c.isdigit() for c in word_upper)
+        
+        if (is_pattern_a or is_pattern_b) and (
+            word_upper not in ACADEMIC_STOP_WORDS
+            and not word_upper.isdigit()
+        ):
+            has_potential_gene = True
+            break
+            
+    if has_potential_gene:
+        if any(kw in query_lower for kw in literature_keywords):
+            return "pubmed"
+        return "gene"
     
-    # Check database keywords
+    # 4. Check database keywords
     db_scores = {}
     for db_name, db_info in DATABASES.items():
         score = 0
@@ -214,16 +244,10 @@ def search_database(
     database: str,
     max_results: int = 10,
     api_key: Optional[str] = None,
-    organism: Optional[str] = None
+    organism: Optional[str] = None,
+    verbose: bool = False
 ) -> Dict[str, Any]:
-    """Search any NCBI database."""
-    global SESSION
-    if SESSION is None:
-        SESSION = create_session()
-    
-    rate_limit(api_key)
-    
-    # Build query
+    """Search any NCBI database using shared http_get utility."""
     search_query = query
     
     # Add organism filter for gene database
@@ -240,11 +264,9 @@ def search_database(
     
     if api_key:
         params["api_key"] = api_key
-    
-    response = SESSION.get(ESEARCH_URL, params=params, timeout=30)
-    response.raise_for_status()
-    
-    data = response.json()
+        
+    response_text = http_get(ESEARCH_URL, params=params, api_key=api_key, timeout=30, verbose=verbose)
+    data = json.loads(response_text)
     result = data.get("esearchresult", {})
     
     return {
@@ -258,17 +280,12 @@ def search_database(
 def fetch_summary(
     ids: List[str],
     database: str,
-    api_key: Optional[str] = None
+    api_key: Optional[str] = None,
+    verbose: bool = False
 ) -> List[Dict[str, Any]]:
-    """Fetch summary for records using ESummary."""
-    global SESSION
-    if SESSION is None:
-        SESSION = create_session()
-    
+    """Fetch summary for records using ESummary and shared http_get."""
     if not ids:
         return []
-    
-    rate_limit(api_key)
     
     params = {
         "db": database,
@@ -278,11 +295,9 @@ def fetch_summary(
     
     if api_key:
         params["api_key"] = api_key
-    
-    response = SESSION.get(ESUMMARY_URL, params=params, timeout=60)
-    response.raise_for_status()
-    
-    data = response.json()
+        
+    response_text = http_get(ESUMMARY_URL, params=params, api_key=api_key, timeout=60, verbose=verbose)
+    data = json.loads(response_text)
     result = data.get("result", {})
     
     records = []
@@ -503,7 +518,7 @@ Examples:
                 query = f"({query}) AND {type_map[args.type]}"
     
     # Search
-    search_result = search_database(query, database, args.max, api_key, args.organism)
+    search_result = search_database(query, database, args.max, api_key, args.organism, args.verbose)
     ids = search_result["ids"]
     total = search_result["count"]
     
@@ -511,10 +526,18 @@ Examples:
         print(f"Found {total} results", file=sys.stderr)
     
     # Fetch summaries
-    records = fetch_summary(ids, database, api_key) if ids else []
+    records = fetch_summary(ids, database, api_key, args.verbose) if ids else []
     
     # Format output
-    output = format_results(records, total, query, database)
+    if args.format == "json":
+        output = json.dumps({
+            "database": database,
+            "query": query,
+            "total_count": total,
+            "records": records
+        }, indent=2, ensure_ascii=False)
+    else:
+        output = format_results(records, total, query, database)
     
     # Print or save
     if args.output:

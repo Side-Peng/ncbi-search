@@ -18,46 +18,23 @@ Features:
 import os
 import sys
 import json
-import time
 import argparse
 import re
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 
+# Ensure we can import ncbi_utils from scripts directory
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
-    import requests
-    from requests.adapters import HTTPAdapter
-    from urllib3.util.retry import Retry
+    from ncbi_utils import http_get, clean_xml_tags
 except ImportError:
-    print("Error: requests library required. Install with: pip install requests")
+    print("Error: Could not import ncbi_utils.py from the scripts directory.", file=sys.stderr)
     sys.exit(1)
-
-
-def create_session():
-    """Create a session with retry logic."""
-    session = requests.Session()
-    retry_strategy = Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504],
-    )
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
-
-
-# Global session
-SESSION = None
 
 # NCBI E-Utilities Base URLs
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 ESEARCH_URL = f"{EUTILS_BASE}/esearch.fcgi"
 EFETCH_URL = f"{EUTILS_BASE}/efetch.fcgi"
-
-# Rate limiting
-LAST_REQUEST_TIME = 0
-MIN_REQUEST_INTERVAL = 0.34
 
 # Known MeSH terms for common medical concepts
 MESH_TERMS = {
@@ -131,16 +108,6 @@ def get_api_key(args: argparse.Namespace) -> Optional[str]:
     if args.api_key:
         return args.api_key
     return os.environ.get("NCBI_API_KEY")
-
-
-def rate_limit(api_key: Optional[str]):
-    """Enforce rate limiting."""
-    global LAST_REQUEST_TIME
-    interval = 0.11 if api_key else MIN_REQUEST_INTERVAL
-    elapsed = time.time() - LAST_REQUEST_TIME
-    if elapsed < interval:
-        time.sleep(interval - elapsed)
-    LAST_REQUEST_TIME = time.time()
 
 
 def detect_query_elements(query: str) -> Dict[str, Any]:
@@ -307,15 +274,10 @@ def build_pubmed_query(
 def search_pubmed(
     query: str,
     max_results: int = 10,
-    api_key: Optional[str] = None
+    api_key: Optional[str] = None,
+    verbose: bool = False
 ) -> Dict[str, Any]:
-    """Search PubMed and return PMIDs."""
-    global SESSION
-    if SESSION is None:
-        SESSION = create_session()
-    
-    rate_limit(api_key)
-    
+    """Search PubMed and return PMIDs using shared http_get utility."""
     params = {
         "db": "pubmed",
         "term": query,
@@ -326,11 +288,9 @@ def search_pubmed(
     
     if api_key:
         params["api_key"] = api_key
-    
-    response = SESSION.get(ESEARCH_URL, params=params, timeout=30)
-    response.raise_for_status()
-    
-    data = response.json()
+        
+    response_text = http_get(ESEARCH_URL, params=params, api_key=api_key, timeout=30, verbose=verbose)
+    data = json.loads(response_text)
     result = data.get("esearchresult", {})
     
     return {
@@ -341,18 +301,13 @@ def search_pubmed(
 
 def fetch_articles(
     pmids: List[str],
-    api_key: Optional[str] = None
+    api_key: Optional[str] = None,
+    verbose: bool = False
 ) -> List[Dict[str, Any]]:
-    """Fetch article details by PMID."""
-    global SESSION
-    if SESSION is None:
-        SESSION = create_session()
-    
+    """Fetch article details by PMID using shared http_get utility."""
     if not pmids:
         return []
-    
-    rate_limit(api_key)
-    
+        
     params = {
         "db": "pubmed",
         "id": ",".join(pmids),
@@ -362,11 +317,9 @@ def fetch_articles(
     
     if api_key:
         params["api_key"] = api_key
-    
-    response = SESSION.get(EFETCH_URL, params=params, timeout=60)
-    response.raise_for_status()
-    
-    return parse_pubmed_xml(response.text)
+        
+    response_text = http_get(EFETCH_URL, params=params, api_key=api_key, timeout=60, verbose=verbose)
+    return parse_pubmed_xml(response_text)
 
 
 def parse_pubmed_xml(xml_text: str) -> List[Dict[str, Any]]:
@@ -442,13 +395,6 @@ def parse_pubmed_xml(xml_text: str) -> List[Dict[str, Any]]:
             articles.append(article)
     
     return articles
-
-
-def clean_xml_tags(text: str) -> str:
-    """Remove XML tags and clean whitespace."""
-    text = re.sub(r'<[^>]+>', '', text)
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
 
 
 def format_output(
@@ -563,7 +509,7 @@ def main():
         print(f"PubMed 检索式: {pubmed_query}", file=sys.stderr)
     
     # Search
-    search_result = search_pubmed(pubmed_query, args.max, api_key)
+    search_result = search_pubmed(pubmed_query, args.max, api_key, args.verbose)
     pmids = search_result["ids"]
     total = search_result["count"]
     
@@ -571,7 +517,7 @@ def main():
         print(f"找到 {total} 篇文献, 获取 {len(pmids)} 篇...", file=sys.stderr)
     
     # Fetch articles
-    articles = fetch_articles(pmids, api_key) if pmids else []
+    articles = fetch_articles(pmids, api_key, args.verbose) if pmids else []
     
     # Format output
     output = format_output(articles, total, pubmed_query, explanation, args.format)
