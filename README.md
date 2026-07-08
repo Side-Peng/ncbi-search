@@ -21,7 +21,7 @@
 - 🎯 **智能意图识别** - 自动判断搜索目标数据库（文献/基因/变异等），支持通用基因正则匹配
 - 📚 **多数据库支持** - PubMed, Gene, Protein, dbSNP, ClinVar 等 10+ 数据库
 - 🔄 **自然语言转换** - 宽松策略：MeSH词和基因符号加字段标签，普通关键词原样传入 PubMed
-- 📄 **完整摘要输出** - PubMed 结果默认包含 1000 字符摘要预览，`--full-abstract` 获取全文
+- 📄 **分级摘要输出** - PubMed 结果支持三级摘要显示：`--abstract none`（仅标题）、`preview`（前1000字符，默认）、`full`（完整摘要），渐进式检索节省 Token
 - 🏗️ **ElementTree 解析** - 结构化 XML 解析替代脆弱正则，支持结构化摘要和机构作者
 - ⚡ **零外部依赖** - 仅需 `requests`，直接调用 NCBI 官方 E-Utilities API
 - 💾 **SQLite 本地缓存** - 自动缓存查询结果，二次查询毫秒级响应
@@ -77,8 +77,13 @@ python scripts/ncbi_search.py "APOE" --db gene --organism human
 python scripts/ncbi_search.py "insulin" --db protein
 
 # PubMed 高级过滤
-python scripts/ncbi_search.py "diabetes treatment" --years 5 --type review --max 20 --full-abstract
+python scripts/ncbi_search.py "diabetes treatment" --years 5 --type review --max 20 --abstract full
 python scripts/ncbi_search.py "Alzheimer amyloid beta" --sort pub_date --max 10
+
+# 渐进式检索（节省 Token，推荐 AI Agent 使用）
+python scripts/ncbi_search.py "Alzheimer APOE" --db pubmed --max 20 --abstract none    # Step 1: 仅标题
+python scripts/ncbi_search.py "Alzheimer APOE" --db pubmed --max 10 --abstract preview  # Step 2: 摘要预览
+python scripts/pubmed_fetch.py 34239348 33597265 --abstract full                         # Step 3: 完整摘要
 ```
 
 ### 📖 使用示例
@@ -87,7 +92,7 @@ python scripts/ncbi_search.py "Alzheimer amyloid beta" --sort pub_date --max 10
 
 ```bash
 # 近5年阿尔茨海默病综述（含完整摘要）
-python scripts/ncbi_search.py "Alzheimer disease" --years 5 --type review --full-abstract
+python scripts/ncbi_search.py "Alzheimer disease" --years 5 --type review --abstract full
 
 # 按出版日期排序
 python scripts/ncbi_search.py "COVID-19 vaccine" --sort pub_date --max 20
@@ -125,7 +130,7 @@ URL: https://pubmed.ncbi.nlm.nih.gov/34239348/
 ----------------------------------------------------------------------
 ```
 
-> **v2 更新**：PubMed 结果现在默认包含摘要（1000 字符预览），加 `--full-abstract` 显示完整摘要。
+> **v2 更新**：PubMed 结果现在支持三级摘要显示：`--abstract none`（仅标题）、`preview`（1000字符预览，默认）、`full`（完整摘要）。`--full-abstract` 仍可用作 `--abstract full` 的简写。
 
 #### Gene 基因检索
 
@@ -171,10 +176,10 @@ URL: https://www.ncbi.nlm.nih.gov/snp/rs429358
 
 ```bash
 # 通过 PMID 列表获取（自动分批，每批 200 个）
-python scripts/pubmed_fetch.py 33597265 34239348 35022842 --full-abstract
+python scripts/pubmed_fetch.py 33597265 34239348 35022842 --abstract full
 
 # 从文件读取大量 PMID（自动分批处理）
-python scripts/pubmed_fetch.py -f pmids.txt --format summary --full-abstract -o results.txt
+python scripts/pubmed_fetch.py -f pmids.txt --format summary --abstract full -o results.txt
 
 # 指定分批大小
 python scripts/pubmed_fetch.py -f pmids.txt --batch-size 100
@@ -249,7 +254,8 @@ python scripts/ncbi_search.py <query> [options]
   --years N             限制最近 N 年（仅 PubMed）
   --type TYPE           文章类型: review, clinical_trial 等（仅 PubMed）
   --sort SORT           排序方式: relevance, pub_date, Author, Journal（默认: relevance）
-  --full-abstract       显示完整摘要（不截断，仅 PubMed）
+  --full-abstract       显示完整摘要（不截断，仅 PubMed）[向后兼容]
+  --abstract MODE       摘要显示级别: none(仅标题), preview(前1000字符,默认), full(完整)
   --organism ORGANISM   限制物种（仅 Gene）
   --format FORMAT       输出格式: summary, json（默认: summary）
   --output FILE         保存到文件
@@ -271,7 +277,8 @@ python scripts/pubmed_search.py <query> [options]
   --type TYPE           文章类型: review, clinical_trial, randomized, meta_analysis
   --mesh MESH           MeSH 主题词筛选
   --sort SORT           排序方式: relevance, pub_date, Author, Journal（默认: relevance）
-  --full-abstract       显示完整摘要（不截断）
+  --full-abstract       显示完整摘要（不截断）[向后兼容]
+  --abstract MODE       摘要显示级别: none(仅标题), preview(前1000字符,默认), full(完整)
   --format FORMAT       输出格式: summary, json（默认: summary）
   --output FILE         保存到文件
   --api-key KEY         NCBI API Key
@@ -289,7 +296,8 @@ python scripts/pubmed_fetch.py <pmids...> [options]
 可选参数:
   --file / -f FILE      从文件读取 PMID 列表
   --format FORMAT       输出格式: summary, json（默认: json）
-  --full-abstract       显示完整摘要（不截断）
+  --full-abstract       显示完整摘要（不截断）[向后兼容]
+  --abstract MODE       摘要显示级别: none(仅标题), preview(前1000字符,默认), full(完整)
   --batch-size N        每批获取的最大 PMID 数（默认: 200）
   --output FILE         保存到文件
   --api-key KEY         NCBI API Key
@@ -387,7 +395,7 @@ python scripts/test_ncbi.py
 - 🎯 **Smart Intent Detection** - Automatically routes queries to appropriate databases, with universal gene symbol regex matching
 - 📚 **Multi-Database Support** - PubMed, Gene, Protein, dbSNP, ClinVar, and 10+ more
 - 🔄 **Relaxed NL Strategy** - MeSH terms and gene symbols get field tags; plain keywords pass through to PubMed naturally
-- 📄 **Full Abstract Output** - PubMed results include 1000-char abstract preview by default; `--full-abstract` for complete text
+- 📄 **Tiered Abstract Output** - Three-level abstract display: `--abstract none` (titles only), `preview` (1000 chars, default), `full` (complete) for progressive token-efficient search
 - 🏗️ **ElementTree Parsing** - Structured XML parsing replaces fragile regex, supporting structured abstracts and collective authors
 - ⚡ **Minimal Dependencies** - Only `requests` needed; direct NCBI E-Utilities API calls
 - 💾 **SQLite Local Cache** - Automatic query caching with millisecond-level repeat lookups
@@ -439,7 +447,7 @@ python scripts/ncbi_search.py "VCV000242862"             # → ClinVar
 python scripts/ncbi_search.py "APOE" --db gene --organism human
 
 # PubMed filters with full abstracts
-python scripts/ncbi_search.py "diabetes" --years 5 --type review --max 20 --full-abstract
+python scripts/ncbi_search.py "diabetes" --years 5 --type review --max 20 --abstract full
 
 # Sort by publication date
 python scripts/ncbi_search.py "COVID-19 vaccine" --sort pub_date --max 20
@@ -454,7 +462,7 @@ python scripts/pubmed_search.py "p-tau217 Abeta42 blood plasma Alzheimer biomark
 
 ```bash
 # Recent Alzheimer reviews with full abstracts
-python scripts/ncbi_search.py "Alzheimer disease" --years 5 --type review --full-abstract
+python scripts/ncbi_search.py "Alzheimer disease" --years 5 --type review --abstract full
 
 # Sort by publication date
 python scripts/ncbi_search.py "COVID-19 vaccine" --sort pub_date --max 20
@@ -487,16 +495,16 @@ URL: https://pubmed.ncbi.nlm.nih.gov/34239348/
 ----------------------------------------------------------------------
 ```
 
-> **v2 update**: PubMed results now include abstracts by default (1000-char preview). Use `--full-abstract` for complete text.
+> **v2 update**: PubMed results now support three-level abstract display: `--abstract none` (titles only), `preview` (1000-char preview, default), `full` (complete). `--full-abstract` still works as shorthand for `--abstract full`.
 
 #### Batch Fetching
 
 ```bash
 # Fetch by PMID list (auto-batched, 200 per batch)
-python scripts/pubmed_fetch.py 33597265 34239348 35022842 --full-abstract
+python scripts/pubmed_fetch.py 33597265 34239348 35022842 --abstract full
 
 # From file (auto-batched)
-python scripts/pubmed_fetch.py -f pmids.txt --format summary --full-abstract -o results.txt
+python scripts/pubmed_fetch.py -f pmids.txt --format summary --abstract full -o results.txt
 
 # Custom batch size
 python scripts/pubmed_fetch.py -f pmids.txt --batch-size 100

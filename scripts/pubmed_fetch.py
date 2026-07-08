@@ -20,7 +20,8 @@ from typing import List, Optional
 # Import from pubmed_search
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pubmed_search import (
-    fetch_articles, get_api_key, format_output, DEFAULT_ABSTRACT_LENGTH
+    fetch_articles, get_api_key, format_output, DEFAULT_ABSTRACT_LENGTH,
+    ABSTRACT_CHOICES, DEFAULT_ABSTRACT_MODE
 )
 
 # P3 fix: Maximum PMIDs per EFetch request (NCBI recommended limit)
@@ -85,7 +86,9 @@ Examples:
     parser.add_argument("pmids", nargs="*", help="PMIDs to fetch")
     parser.add_argument("--file", "-f", help="File containing PMIDs (one per line)")
     parser.add_argument("--format", choices=["json", "summary"], default="json")
-    parser.add_argument("--full-abstract", action="store_true", help="显示完整摘要（不截断）")
+    parser.add_argument("--full-abstract", action="store_true", help="显示完整摘要（不截断）[向后兼容，等同 --abstract full]")
+    parser.add_argument("--abstract", choices=ABSTRACT_CHOICES, default=DEFAULT_ABSTRACT_MODE,
+                        help="摘要显示级别: none(仅标题元数据), preview(前1000字符,默认), full(完整摘要)")
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE, 
                         help=f"每批获取的最大 PMID 数 (默认: {BATCH_SIZE})")
     parser.add_argument("--output", "-o", help="Save to file")
@@ -120,7 +123,7 @@ Examples:
         articles = fetch_articles_batched(pmids, api_key, args.batch_size, args.verbose)
         
         # Format (P1 fix: pass full_abstract option)
-        output = format_output(articles, len(articles), "PMID fetch", "Batch fetch by PMID", args.format, args.full_abstract)
+        output = format_output(articles, len(articles), "PMID fetch", "Batch fetch by PMID", args.format, args.full_abstract, args.abstract)
         
         # Output
         if args.output:

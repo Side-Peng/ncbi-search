@@ -148,6 +148,13 @@ ACADEMIC_STOP_WORDS = {
 # Default abstract preview length (raised from 200 to 1000)
 DEFAULT_ABSTRACT_LENGTH = 1000
 
+# Abstract display tiers for progressive search (token optimization for AI agents)
+ABSTRACT_NONE = "none"       # Tier 1: Title + metadata only (lowest token cost)
+ABSTRACT_PREVIEW = "preview" # Tier 2: First 1000 chars of abstract (current default)
+ABSTRACT_FULL = "full"       # Tier 3: Complete abstract (final selection)
+ABSTRACT_CHOICES = [ABSTRACT_NONE, ABSTRACT_PREVIEW, ABSTRACT_FULL]
+DEFAULT_ABSTRACT_MODE = ABSTRACT_PREVIEW
+
 
 def get_api_key(args: argparse.Namespace) -> Optional[str]:
     """Get NCBI API key from args or environment."""
@@ -472,8 +479,12 @@ def parse_pubmed_xml(xml_text: str) -> List[Dict[str, Any]]:
     return articles
 
 
-def format_pubmed_results(records: List[Dict], total: int, query: str, full_abstract: bool = False) -> str:
-    """Format PubMed results — P0 fix: now includes abstracts."""
+def format_pubmed_results(records: List[Dict], total: int, query: str, full_abstract: bool = False, abstract_mode: str = DEFAULT_ABSTRACT_MODE) -> str:
+    """Format PubMed results — P0 fix: now includes abstracts.
+    
+    abstract_mode: 'none' (no abstract), 'preview' (1000 chars), 'full' (complete).
+    --full-abstract flag takes priority over abstract_mode.
+    """
     lines = []
     lines.append("=" * 70)
     lines.append("PubMed Search Results")
@@ -513,12 +524,13 @@ def format_pubmed_results(records: List[Dict], total: int, query: str, full_abst
         if record.get("doi"):
             lines.append(f"DOI: {record['doi']}")
         
-        # P0 fix: Abstract is now included!
-        if record.get("abstract"):
+        # P0 fix: Abstract is now included! Determine effective mode (--full-abstract takes priority)
+        effective_mode = ABSTRACT_FULL if full_abstract else abstract_mode
+        if effective_mode != ABSTRACT_NONE and record.get("abstract"):
             abstract = record["abstract"]
-            if full_abstract:
+            if effective_mode == ABSTRACT_FULL:
                 lines.append(f"Abstract: {abstract}")
-            else:
+            else:  # preview
                 preview = abstract[:DEFAULT_ABSTRACT_LENGTH] + "..." if len(abstract) > DEFAULT_ABSTRACT_LENGTH else abstract
                 lines.append(f"Abstract: {preview}")
         
@@ -627,10 +639,10 @@ def format_generic_results(records: List[Dict], total: int, query: str, database
     return "\n".join(lines)
 
 
-def format_results(records: List[Dict], total: int, query: str, database: str, full_abstract: bool = False) -> str:
+def format_results(records: List[Dict], total: int, query: str, database: str, full_abstract: bool = False, abstract_mode: str = DEFAULT_ABSTRACT_MODE) -> str:
     """Format results based on database type."""
     if database == "pubmed":
-        return format_pubmed_results(records, total, query, full_abstract)
+        return format_pubmed_results(records, total, query, full_abstract, abstract_mode)
     elif database == "gene":
         return format_gene_results(records, total, query)
     elif database == "snp":
@@ -674,7 +686,9 @@ Examples:
     parser.add_argument("--organism", help="Organism filter (Gene only)")
     parser.add_argument("--sort", choices=["relevance", "pub_date", "Author", "Journal"], default="relevance",
                         help="Sort order: relevance, pub_date, Author, Journal")
-    parser.add_argument("--full-abstract", action="store_true", help="Show full abstracts without truncation (PubMed only)")
+    parser.add_argument("--full-abstract", action="store_true", help="Show full abstracts without truncation (PubMed only) [backward compatible, same as --abstract full]")
+    parser.add_argument("--abstract", choices=ABSTRACT_CHOICES, default=DEFAULT_ABSTRACT_MODE,
+                        help="Abstract display level: none(title+metadata only), preview(first 1000 chars, default), full(complete abstract). PubMed only.")
     parser.add_argument("--format", choices=["json", "summary"], default="summary")
     parser.add_argument("--output", "-o", help="Save to file")
     parser.add_argument("--api-key", help="NCBI API key")
@@ -736,7 +750,7 @@ Examples:
                 "records": records
             }, indent=2, ensure_ascii=False)
         else:
-            output = format_results(records, total, query, database, args.full_abstract)
+            output = format_results(records, total, query, database, args.full_abstract, args.abstract)
         
         # Print or save
         if args.output:

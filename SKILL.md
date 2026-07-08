@@ -1,6 +1,6 @@
 ---
 name: ncbi-search
-description: "Search NCBI databases using E-Utilities API (official, free). Supports 10+ databases: PubMed (literature), Gene, Protein, Nucleotide, dbSNP, ClinVar, Taxonomy, BioSample, Assembly, SRA. Automatically detects search intent and routes to appropriate database. Returns formatted results with key information including full abstracts for PubMed. Use for biomedical literature, gene information, protein sequences, genetic variants, and more."
+description: "Search NCBI databases using E-Utilities API (official, free). Supports 10+ databases: PubMed (literature), Gene, Protein, Nucleotide, dbSNP, ClinVar, Taxonomy, BioSample, Assembly, SRA. Automatically detects search intent and routes to appropriate database. Returns formatted results with tiered abstract display (none/preview/full) for token-efficient progressive search. Use for biomedical literature, gene information, protein sequences, genetic variants, and more."
 allowed-tools: [Bash]
 trigger-keywords: [ncbi, pubmed, gene, protein, snp, clinvar, literature, paper, article, review, variant, genome, sequence, taxonomy, dna, rna]
 ---
@@ -71,12 +71,14 @@ AI Agent 请按以下优先级判断使用哪个数据库：
 ### Do / Don't
 
 | ✅ Do | ❌ Don't |
-|-------|---------|
-| 用户提到"基因"时用 `--db gene` | 不要对纯数字查询（如"348"）自动路由到 Gene |
-| 用户提到"文献/论文"时用 `--db pubmed` | 不要对含基因符号的查询直接路由到 Gene（先检查是否要查文献） |
+|-------|----------|
+| 用户提到“基因”时用 `--db gene` | 不要对纯数字查询（如“348”）自动路由到 Gene |
+| 用户提到“文献/论文”时用 `--db pubmed` | 不要对含基因符号的查询直接路由到 Gene（先检查是否要查文献） |
 | 用户给 rsID 时用 `--db snp` | 不要用 `--db snp` 查非 SNP 内容 |
 | 不确定时默认用 PubMed | 不要同时查多个数据库（需分步执行） |
-| 需要完整摘要时加 `--full-abstract` | 不要假设摘要会自动截断到 200 字符（现已改为 1000） |
+| 初步搜索用 `--abstract none` 节省 token | 不要默认获取完整摘要再自己截断 |
+| 筛选阶段用 `--abstract preview`（默认） | 不要对大量结果都用 `--abstract full` |
+| 最终选定论文后用 `--abstract full` 或 `--full-abstract` | 不要假设摘要会自动截断到 200 字符（现已改为 1000） |
 
 ---
 
@@ -126,7 +128,7 @@ python scripts/ncbi_search.py "rs429358"
 
 ```bash
 python scripts/ncbi_search.py "APOE" --db gene
-python scripts/ncbi_search.py "diabetes" --db pubmed --full-abstract
+python scripts/ncbi_search.py "diabetes" --db pubmed --abstract full
 python scripts/ncbi_search.py "rs429358" --db snp
 ```
 
@@ -135,7 +137,7 @@ python scripts/ncbi_search.py "rs429358" --db snp
 ```bash
 # 自然语言查询 — 现采用宽松策略，不强制每个词加 [Title/Abstract]
 python scripts/pubmed_search.py "Alzheimer disease cerebrovascular mechanisms"
-python scripts/pubmed_search.py "p-tau217 Abeta42 blood plasma Alzheimer biomarker" --full-abstract
+python scripts/pubmed_search.py "p-tau217 Abeta42 blood plasma Alzheimer biomarker" --abstract full
 python scripts/pubmed_search.py "APOE gene and Alzheimer disease" --years 5
 python scripts/pubmed_search.py "Smith J author Alzheimer" --max 20
 python scripts/pubmed_search.py "diabetes treatment" --sort pub_date --max 20
@@ -156,7 +158,8 @@ python scripts/pubmed_search.py "diabetes treatment" --sort pub_date --max 20
 | `--type` | str | - | **仅 pubmed** | 文章类型过滤 |
 | `--organism` | str | - | **仅 gene** | 物种过滤 |
 | `--sort` | str | relevance | 全部 | 排序方式：relevance, pub_date, Author, Journal |
-| `--full-abstract` | bool | false | **仅 pubmed** | 显示完整摘要（不截断） |
+| `--full-abstract` | bool | false | **仅 pubmed** | 显示完整摘要（不截断）[向后兼容，等同 --abstract full] |
+| `--abstract` | str | preview | **仅 pubmed** | 摘要显示级别：none(仅标题), preview(前1000字符), full(完整) |
 | `--format` | str | summary | 全部 | 输出格式：summary 或 json |
 | `--output` / `-o` | str | - | 全部 | 保存结果到文件 |
 | `--api-key` | str | env var | 全部 | NCBI API Key |
@@ -172,7 +175,8 @@ python scripts/pubmed_search.py "diabetes treatment" --sort pub_date --max 20
 | `--type` | str | - | 文章类型：review, clinical_trial, randomized, meta_analysis |
 | `--mesh` | str | - | MeSH 主题词筛选 |
 | `--sort` | str | relevance | 排序方式：relevance, pub_date, Author, Journal |
-| `--full-abstract` | bool | false | 显示完整摘要（不截断） |
+| `--full-abstract` | bool | false | 显示完整摘要（不截断）[向后兼容，等同 --abstract full] |
+| `--abstract` | str | preview | 摘要显示级别：none(仅标题), preview(前1000字符), full(完整) |
 | `--format` | str | summary | 输出格式：summary 或 json |
 | `--output` / `-o` | str | - | 保存结果到文件 |
 | `--api-key` | str | env var | NCBI API Key |
@@ -185,7 +189,8 @@ python scripts/pubmed_search.py "diabetes treatment" --sort pub_date --max 20
 | `pmids` | 必填 | - | PMID 列表 |
 | `--file` / `-f` | str | - | 从文件读取 PMID 列表 |
 | `--format` | str | json | 输出格式：summary 或 json |
-| `--full-abstract` | bool | false | 显示完整摘要（不截断） |
+| `--full-abstract` | bool | false | 显示完整摘要（不截断）[向后兼容，等同 --abstract full] |
+| `--abstract` | str | preview | 摘要显示级别：none(仅标题), preview(前1000字符), full(完整) |
 | `--batch-size` | int | 200 | 每批获取的最大 PMID 数 |
 | `--output` / `-o` | str | - | 保存结果到文件 |
 | `--api-key` | str | env var | NCBI API Key |
@@ -215,7 +220,9 @@ python scripts/pubmed_search.py "diabetes treatment" --sort pub_date --max 20
 |------|---------|------|
 | `--db pubmed --years 5` | ✅ 合法 | PubMed 限定年份 |
 | `--db pubmed --type review` | ✅ 合法 | PubMed 限定文章类型 |
-| `--db pubmed --full-abstract` | ✅ 合法 | PubMed 显示完整摘要 |
+| `--db pubmed --full-abstract` | ✅ 合法 | PubMed 显示完整摘要（等同 --abstract full） |
+| `--db pubmed --abstract none` | ✅ 合法 | PubMed 仅显示标题（节省 token） |
+| `--db pubmed --abstract full` | ✅ 合法 | PubMed 显示完整摘要 |
 | `--db pubmed --sort pub_date` | ✅ 合法 | PubMed 按日期排序 |
 | `--db gene --organism human` | ✅ 合法 | Gene 限定物种 |
 | `--db snp --years 5` | ❌ 无效 | `--years` 仅适用于 PubMed |
@@ -246,7 +253,7 @@ python scripts/ncbi_search.py "BRCA1" --db nucleotide
 
 ```bash
 # PubMed 高级过滤（含完整摘要）
-python scripts/ncbi_search.py "diabetes treatment" --years 5 --type review --max 20 --full-abstract
+python scripts/ncbi_search.py "diabetes treatment" --years 5 --type review --max 20 --abstract full
 python scripts/ncbi_search.py "Alzheimer amyloid beta" --years 3 --max 5 --sort pub_date
 python scripts/ncbi_search.py "COVID-19 vaccine" --type clinical_trial --max 50
 
@@ -266,7 +273,7 @@ python scripts/ncbi_search.py "Alzheimer disease" --years 5 --max 100 -o results
 ```bash
 # 自然语言查询（宽松策略，不再强制每个词加 [Title/Abstract]）
 python scripts/pubmed_search.py "Alzheimer disease cerebrovascular mechanisms"
-python scripts/pubmed_search.py "p-tau217 Abeta42 ratio blood plasma Alzheimer" --full-abstract
+python scripts/pubmed_search.py "p-tau217 Abeta42 ratio blood plasma Alzheimer" --abstract full
 python scripts/pubmed_search.py "APOE gene and Alzheimer disease" --years 5
 python scripts/pubmed_search.py "Smith J author Alzheimer" --max 20
 python scripts/pubmed_search.py "diabetes treatment review" --type review
@@ -277,16 +284,39 @@ python scripts/pubmed_search.py "cancer immunotherapy" --mesh "Neoplasms" --year
 
 ```bash
 # 通过 PMID 列表获取（自动分批，每批 200 个）
-python scripts/pubmed_fetch.py 33597265 34239348 35022842 --full-abstract
+python scripts/pubmed_fetch.py 33597265 34239348 35022842 --abstract full
 
 # 从文件读取大量 PMID（自动分批处理）
-python scripts/pubmed_fetch.py -f pmids.txt --format summary --full-abstract -o results.txt
+python scripts/pubmed_fetch.py -f pmids.txt --format summary --abstract full -o results.txt
 
 # 指定输出格式
 python scripts/pubmed_fetch.py 33597265 34239348 --format json
 ```
 
-### 5.5 边界情况示例
+### 5.5 渐进式检索策略（推荐 AI Agent 使用）
+
+为节省 Token 消耗，AI Agent 应采用三步渐进式检索：
+
+```bash
+# Step 1 — 广泛搜索（Tier 1, 最低 token）：仅返回标题和元数据
+python scripts/ncbi_search.py "Alzheimer APOE" --db pubmed --max 20 --abstract none
+
+# Step 2 — 筛选摘要（Tier 2, 默认行为）：返回前1000字符摘要
+python scripts/ncbi_search.py "Alzheimer APOE" --db pubmed --max 10 --abstract preview
+
+# Step 3 — 获取完整摘要（Tier 3, 仅选中的论文）
+python scripts/pubmed_fetch.py 34239348 33597265 --abstract full
+```
+
+| 级别 | `--abstract` 值 | 输出内容 | 使用场景 | Token 成本 |
+|------|----------------|---------|---------|----------|
+| Tier 1 | `none` | 标题、作者、期刊、DOI、URL、MeSH | 广泛搜索，初筛 | 最低 |
+| Tier 2 | `preview`（默认） | Tier 1 + 前 1000 字符摘要 | 二次筛选 | 中等 |
+| Tier 3 | `full` | Tier 2 + 完整摘要 | 最终选定论文 | 最高 |
+
+> **重要提示**: `--full-abstract` 仍可用作 `--abstract full` 的简写（向后兼容）。
+
+### 5.6 边界情况示例
 
 ```bash
 # 无结果查询
@@ -373,11 +403,11 @@ python scripts/ncbi_search.py "(Alzheimer[Title/Abstract]) NOT (mouse[Title/Abst
 | `Journal` | 期刊名称 | 判断期刊影响力 |
 | `Year` | 出版年份 | 判断时效性 |
 | `DOI` | 数字对象标识符 | 用于查找全文 |
-| `Abstract` | 摘要（前 1000 字符预览，或 `--full-abstract` 显示完整） | **现在默认包含！** 判断论文是否支持特定论点 |
+| `Abstract` | 摘要（根据 `--abstract` 级别显示：`none` 不显示、`preview` 前1000字符、`full` 完整） | 判断论文是否支持特定论点 |
 | `MeSH` | MeSH 主题词（最多 5 个） | 了解文章主题分类 |
 | `URL` | PubMed 链接 | 直接访问 |
 
-> **重要更新**: `ncbi_search.py` 的 PubMed 结果现在使用 EFetch API，默认包含摘要（1000 字符预览）。加 `--full-abstract` 可获取完整摘要。
+> **重要更新**: `ncbi_search.py` 的 PubMed 结果使用 EFetch API，支持三级摘要显示：`--abstract none`（仅标题）、`preview`（1000字符预览，默认）、`full`（完整摘要）。`--full-abstract` 仍可用作 `--abstract full` 的简写。
 
 ### 7.2 Gene 结果字段
 
@@ -480,7 +510,7 @@ python scripts/pubmed_fetch.py -f pmids.txt
 python scripts/pubmed_fetch.py 33597265 34239348 --format json
 
 # 获取完整摘要
-python scripts/pubmed_fetch.py 33597265 -f pmids.txt --full-abstract -o full_results.txt
+python scripts/pubmed_fetch.py 33597265 -f pmids.txt --abstract full -o full_results.txt
 ```
 
 > **重要更新**: `pubmed_fetch.py` 现在自动分批处理（每批 200 个 PMID），不再需要担心大量 PMID 导致请求失败。
@@ -490,10 +520,10 @@ python scripts/pubmed_fetch.py 33597265 -f pmids.txt --full-abstract -o full_res
 ```bash
 # 分步查询不同数据库
 python scripts/ncbi_search.py "APOE" --db gene --format json -o gene_result.json
-python scripts/ncbi_search.py "APOE" --db pubmed --max 5 --full-abstract --format json -o pubmed_result.json
+python scripts/ncbi_search.py "APOE" --db pubmed --max 5 --abstract full --format json -o pubmed_result.json
 
 # 使用 pubmed_search.py 获取详细信息
-python scripts/pubmed_search.py "APOE gene Alzheimer" --max 10 --full-abstract -o detailed_results.txt
+python scripts/pubmed_search.py "APOE gene Alzheimer" --max 10 --abstract full -o detailed_results.txt
 ```
 
 ### 9.3 数据导出格式
@@ -597,7 +627,7 @@ ncbi-search/
 - ✅ **PubMed 结果无摘要**: `ncbi_search.py` 对 PubMed 改用 EFetch API，默认返回摘要
 
 **P1 修复（重要问题）:**
-- ✅ **摘要截断太短**: 从 200 字符提高到 1000 字符，新增 `--full-abstract` 参数显示完整摘要
+- ✅ **摘要截断太短**: 从 200 字符提高到 1000 字符，新增 `--abstract` 三级摘要显示（none/preview/full），`--full-abstract` 保留向后兼容
 - ✅ **自然语言转换过于激进**: 非MeSH词/基因符号不再强制加 `[Title/Abstract]`，改为原始关键词组传入 PubMed
 
 **P2 修复（代码质量问题）:**

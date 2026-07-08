@@ -13,7 +13,7 @@ Features:
     - Smart field mapping (Title/Abstract, Author, Journal)
     - Date filtering
     - Article type filtering
-    - Full abstract output (1000 chars by default, or unlimited with --full-abstract)
+    - Tiered abstract display: none (titles only), preview (1000 chars), full (complete)
 """
 
 import os
@@ -121,6 +121,13 @@ STOP_WORDS = {
 
 # Default abstract preview length (P1 fix: raised from 200 to 1000)
 DEFAULT_ABSTRACT_LENGTH = 1000
+
+# Abstract display tiers for progressive search (token optimization for AI agents)
+ABSTRACT_NONE = "none"       # Tier 1: Title + metadata only (lowest token cost)
+ABSTRACT_PREVIEW = "preview" # Tier 2: First 1000 chars of abstract (current default)
+ABSTRACT_FULL = "full"       # Tier 3: Complete abstract (final selection)
+ABSTRACT_CHOICES = [ABSTRACT_NONE, ABSTRACT_PREVIEW, ABSTRACT_FULL]
+DEFAULT_ABSTRACT_MODE = ABSTRACT_PREVIEW
 
 
 def get_api_key(args: argparse.Namespace) -> Optional[str]:
@@ -558,12 +565,15 @@ def format_output(
     query: str,
     explanation: str,
     format: str = "summary",
-    full_abstract: bool = False
+    full_abstract: bool = False,
+    abstract_mode: str = DEFAULT_ABSTRACT_MODE
 ) -> str:
     """Format output for display.
     
     P1 fix: Abstract preview length raised from 200 to 1000 chars.
-    full_abstract=True bypasses truncation entirely.
+    full_abstract=True bypasses truncation entirely (backward compatible).
+    abstract_mode: 'none' (no abstract), 'preview' (1000 chars), 'full' (complete).
+    --full-abstract flag takes priority over abstract_mode.
     """
     
     if format == "json":
@@ -612,11 +622,13 @@ def format_output(
                 mesh_str += " ..."
             lines.append(f"MeSH: {mesh_str}")
         
-        if article.get("abstract"):
+        # Determine effective abstract mode (--full-abstract takes priority)
+        effective_mode = ABSTRACT_FULL if full_abstract else abstract_mode
+        if effective_mode != ABSTRACT_NONE and article.get("abstract"):
             abstract = article["abstract"]
-            if full_abstract:
+            if effective_mode == ABSTRACT_FULL:
                 lines.append(f"Abstract: {abstract}")
-            else:
+            else:  # preview
                 preview = abstract[:DEFAULT_ABSTRACT_LENGTH] + "..." if len(abstract) > DEFAULT_ABSTRACT_LENGTH else abstract
                 lines.append(f"Abstract: {preview}")
         
@@ -647,7 +659,9 @@ def main():
     parser.add_argument("--mesh", help="MeSH 主题词筛选")
     parser.add_argument("--sort", choices=["relevance", "pub_date", "Author", "Journal"], default="relevance",
                         help="排序方式: relevance(相关性), pub_date(日期), Author(作者), Journal(期刊)")
-    parser.add_argument("--full-abstract", action="store_true", help="显示完整摘要（不截断）")
+    parser.add_argument("--full-abstract", action="store_true", help="显示完整摘要（不截断）[向后兼容，等同 --abstract full]")
+    parser.add_argument("--abstract", choices=ABSTRACT_CHOICES, default=DEFAULT_ABSTRACT_MODE,
+                        help="摘要显示级别: none(仅标题元数据), preview(前1000字符,默认), full(完整摘要)")
     parser.add_argument("--format", choices=["json", "summary"], default="summary", help="输出格式")
     parser.add_argument("--output", "-o", help="保存到文件")
     parser.add_argument("--api-key", help="NCBI API key")
@@ -689,7 +703,7 @@ def main():
         articles = fetch_articles(pmids, api_key, args.verbose) if pmids else []
         
         # Format output
-        output = format_output(articles, total, pubmed_query, explanation, args.format, args.full_abstract)
+        output = format_output(articles, total, pubmed_query, explanation, args.format, args.full_abstract, args.abstract)
         
         # Print or save
         if args.output:
