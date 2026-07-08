@@ -8,11 +8,12 @@ Usage:
     python pubmed_search.py "your query" [options]
 
 Features:
-    - Automatic natural language to PubMed query conversion
-    - MeSH term recognition and expansion
+    - Natural language to PubMed query conversion (lenient approach)
+    - MeSH term recognition and expansion (including multi-word phrases)
     - Smart field mapping (Title/Abstract, Author, Journal)
     - Date filtering
     - Article type filtering
+    - Full abstract output (1000 chars by default, or unlimited with --full-abstract)
 """
 
 import os
@@ -20,13 +21,14 @@ import sys
 import json
 import argparse
 import re
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 
 # Ensure we can import ncbi_utils from scripts directory
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
-    from ncbi_utils import http_get, clean_xml_tags
+    from ncbi_utils import http_get, get_element_text
 except ImportError:
     print("Error: Could not import ncbi_utils.py from the scripts directory.", file=sys.stderr)
     sys.exit(1)
@@ -37,6 +39,7 @@ ESEARCH_URL = f"{EUTILS_BASE}/esearch.fcgi"
 EFETCH_URL = f"{EUTILS_BASE}/efetch.fcgi"
 
 # Known MeSH terms for common medical concepts
+# P2 fix: includes multi-word phrases (will be matched via phrase matching)
 MESH_TERMS = {
     # Diseases
     "alzheimer": "Alzheimer Disease",
@@ -47,13 +50,17 @@ MESH_TERMS = {
     "parkinson's": "Parkinson Disease",
     "stroke": "Stroke",
     "cerebrovascular": "Cerebrovascular Disorders",
+    "cerebrovascular disorders": "Cerebrovascular Disorders",
     "diabetes": "Diabetes Mellitus",
+    "diabetes mellitus": "Diabetes Mellitus",
     "cancer": "Neoplasms",
     "tumor": "Neoplasms",
+    "neoplasms": "Neoplasms",
     "hypertension": "Hypertension",
     "depression": "Depression",
     "schizophrenia": "Schizophrenia",
     "autism": "Autistic Disorder",
+    "autistic disorder": "Autistic Disorder",
     "epilepsy": "Epilepsy",
     "multiple sclerosis": "Multiple Sclerosis",
     
@@ -67,18 +74,28 @@ MESH_TERMS = {
     # Systems
     "nervous system": "Nervous System",
     "cardiovascular": "Cardiovascular System",
+    "cardiovascular system": "Cardiovascular System",
     "immune": "Immune System",
+    "immune system": "Immune System",
     
     # Concepts
     "neuroinflammation": "Neuroinflammation",
     "amyloid": "Amyloid",
     "tau": "Tau Proteins",
+    "tau proteins": "Tau Proteins",
     
     # Processes
     "apoptosis": "Apoptosis",
     "autophagy": "Autophagy",
     "angiogenesis": "Angiogenesis",
 }
+
+# Multi-word MeSH keys sorted by length (longest first) for greedy matching
+MESH_MULTIWORD_KEYS = sorted(
+    [k for k in MESH_TERMS if ' ' in k or "'" in k],
+    key=lambda x: len(x),
+    reverse=True
+)
 
 # Gene symbols (common ones)
 GENE_SYMBOLS = [
@@ -102,10 +119,13 @@ STOP_WORDS = {
     "own", "same", "so", "than", "too", "very", "just", "also", "now",
 }
 
+# Default abstract preview length (P1 fix: raised from 200 to 1000)
+DEFAULT_ABSTRACT_LENGTH = 1000
+
 
 def get_api_key(args: argparse.Namespace) -> Optional[str]:
     """Get NCBI API key from args or environment."""
-    if args.api_key:
+    if hasattr(args, 'api_key') and args.api_key:
         return args.api_key
     return os.environ.get("NCBI_API_KEY")
 
@@ -113,6 +133,9 @@ def get_api_key(args: argparse.Namespace) -> Optional[str]:
 def detect_query_elements(query: str) -> Dict[str, Any]:
     """
     Detect and categorize elements in natural language query.
+    
+    P2 fix: Multi-word MeSH phrases are matched first (greedy, longest first),
+    then single-word fallback.
     
     Returns:
         Dict with 'terms', 'genes', 'mesh', 'authors', 'journal', 'year'
@@ -129,17 +152,52 @@ def detect_query_elements(query: str) -> Dict[str, Any]:
         "article_type": None,
     }
     
-    # Split into words
+    # P2 fix: Try multi-word MeSH phrase matching first (greedy, longest first)
+    matched_spans = []  # (start, end, mesh_value) in lowercase query
+    for phrase_key in MESH_MULTIWORD_KEYS:
+        idx = query_lower.find(phrase_key)
+        while idx != -1:
+            # Check this span doesn't overlap with already-matched spans
+            span_start = idx
+            span_end = idx + len(phrase_key)
+            overlaps = False
+            for (ms, me, _) in matched_spans:
+                if span_start < me and span_end > ms:
+                    overlaps = True
+                    break
+            if not overlaps:
+                matched_spans.append((span_start, span_end, MESH_TERMS[phrase_key]))
+                elements["mesh"].append(MESH_TERMS[phrase_key])
+            idx = query_lower.find(phrase_key, span_end)
+    
+    # Now process individual words, skipping words that are part of matched phrases
     words = re.findall(r'\b\w+\b', query)
     
-    # Detect genes (uppercase or known symbols)
+    # Build a set of character positions covered by matched phrases
+    phrase_positions = set()
+    for (start, end, _) in matched_spans:
+        for pos in range(start, end):
+            phrase_positions.add(pos)
+    
     for word in words:
         word_upper = word.upper()
+        word_lower = word.lower()
+        
+        # Check if this word's position is part of a matched multi-word phrase
+        # Find the position of this word in the original query
+        word_match = re.search(r'\b' + re.escape(word) + r'\b', query, re.IGNORECASE)
+        if word_match:
+            word_start = word_match.start()
+            word_end = word_match.end()
+            in_phrase = any(word_start < me and word_end > ms for (ms, me, _) in matched_spans)
+            if in_phrase:
+                continue  # Skip, already covered by multi-word MeSH
+        
+        # Detect genes (uppercase or known symbols)
         if word_upper in GENE_SYMBOLS:
             elements["genes"].append(word_upper)
-        elif word.lower() not in STOP_WORDS and len(word) > 1:
-            # Check if it's a MeSH term
-            word_lower = word.lower()
+        elif word_lower not in STOP_WORDS and len(word) > 1:
+            # Check if it's a single-word MeSH term
             if word_lower in MESH_TERMS:
                 elements["mesh"].append(MESH_TERMS[word_lower])
             elements["terms"].append(word)
@@ -188,6 +246,12 @@ def build_pubmed_query(
     """
     Build PubMed query from natural language and detected elements.
     
+    P1 fix: Natural language conversion is now LENIENT.
+    - MeSH terms and gene symbols get explicit field tags ([MeSH], [Title/Abstract])
+    - Other terms are passed as RAW KEYWORDS without field restriction
+    - PubMed's own search engine handles the rest (stemming, MeSH auto-mapping, etc.)
+    - This avoids the "0 results" problem from AND-ing every word with [Title/Abstract]
+    
     Returns:
         Tuple of (pubmed_query, explanation)
     """
@@ -198,20 +262,24 @@ def build_pubmed_query(
     if any(tag in query for tag in ["[", " AND ", " OR ", " NOT "]):
         return query, "使用用户提供的 PubMed 检索式"
     
-    # Process detected elements
-    
-    # 1. Genes - search in Title/Abstract
+    # 1. Genes - search in Title/Abstract (these are reliable, keep field tag)
     for gene in elements.get("genes", []):
         query_parts.append(f'{gene}[Title/Abstract]')
         explanation_parts.append(f'Gene "{gene}" in title/abstract')
     
-    # 2. MeSH terms
+    # 2. MeSH terms (these are reliable, keep field tag)
     for mesh in elements.get("mesh", []):
         query_parts.append(f'"{mesh}"[MeSH]')
         explanation_parts.append(f'MeSH term "{mesh}"')
     
-    # 3. Other terms - Title/Abstract
+    # 3. Other terms — P1 fix: pass as RAW keywords, NO [Title/Abstract] wrapping
+    # PubMed's search engine naturally handles them (MeSH auto-mapping, stemming, etc.)
+    # Words that are already handled as article type filters — don't duplicate
+    type_filter_words = {"review", "reviews", "trial", "clinical", "randomized", "rct",
+                         "meta-analysis", "meta", "case", "case report", "case study"}
+    
     processed_terms = set()
+    raw_keyword_parts = []
     for term in elements.get("terms", []):
         term_lower = term.lower()
         # Skip if already processed as gene or mesh
@@ -221,10 +289,18 @@ def build_pubmed_query(
             continue
         if term_lower in STOP_WORDS:
             continue
+        if term_lower in type_filter_words:
+            continue  # Already handled by article_type filter
         if term_lower in processed_terms:
             continue
         processed_terms.add(term_lower)
-        query_parts.append(f'{term}[Title/Abstract]')
+        raw_keyword_parts.append(term)
+    
+    if raw_keyword_parts:
+        # Join raw keywords as a phrase/group — PubMed handles them naturally
+        raw_query = " ".join(raw_keyword_parts)
+        query_parts.append(f'({raw_query})')
+        explanation_parts.append(f'Keywords: {raw_query}')
     
     # 4. Authors
     for author in elements.get("authors", []):
@@ -261,12 +337,13 @@ def build_pubmed_query(
     
     # Combine with AND
     if not query_parts:
-        # Fallback: search each word
+        # Fallback: use raw query with stop words removed
         words = [w for w in query.split() if w.lower() not in STOP_WORDS and len(w) > 1]
-        query_parts = [f'{w}[Title/Abstract]' for w in words[:5]]  # Limit to 5 terms
+        raw_query = " ".join(words[:8])
+        query_parts = [f'({raw_query})']
     
     pubmed_query = " AND ".join(query_parts)
-    explanation = " -> ".join(explanation_parts) if explanation_parts else "Keywords in title/abstract"
+    explanation = " -> ".join(explanation_parts) if explanation_parts else "Keywords search"
     
     return pubmed_query, explanation
 
@@ -275,6 +352,7 @@ def search_pubmed(
     query: str,
     max_results: int = 10,
     api_key: Optional[str] = None,
+    sort: str = "relevance",
     verbose: bool = False
 ) -> Dict[str, Any]:
     """Search PubMed and return PMIDs using shared http_get utility."""
@@ -283,7 +361,7 @@ def search_pubmed(
         "term": query,
         "retmax": max_results,
         "retmode": "json",
-        "sort": "relevance"
+        "sort": sort  # P3 fix: allow sort order
     }
     
     if api_key:
@@ -304,7 +382,7 @@ def fetch_articles(
     api_key: Optional[str] = None,
     verbose: bool = False
 ) -> List[Dict[str, Any]]:
-    """Fetch article details by PMID using shared http_get utility."""
+    """Fetch article details by PMID using EFetch (returns full abstracts)."""
     if not pmids:
         return []
         
@@ -323,69 +401,146 @@ def fetch_articles(
 
 
 def parse_pubmed_xml(xml_text: str) -> List[Dict[str, Any]]:
-    """Parse PubMed XML response into structured data."""
+    """
+    Parse PubMed XML response into structured data.
+    
+    P2 fix: Uses ElementTree instead of regex for robust XML parsing.
+    Handles:
+    - Structured abstracts (AbstractText with Label attribute)
+    - Missing authors / CollectiveName authors
+    - Inline tags in titles and abstracts (<i>, <b>, <sub>, etc.)
+    - Various DOI formats
+    """
     articles = []
     
-    article_pattern = r'<PubmedArticle>(.*?)</PubmedArticle>'
-    article_matches = re.findall(article_pattern, xml_text, re.DOTALL)
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as e:
+        # Fallback: if ElementTree fails, log warning and return empty
+        print(f"Warning: Failed to parse PubMed XML: {e}", file=sys.stderr)
+        return articles
     
-    for article_xml in article_matches:
+    # Handle both <PubmedArticleSet> wrapper and bare articles
+    article_elements = root.findall('.//PubmedArticle')
+    if not article_elements:
+        # Some responses may have <PubmedBookArticle> instead
+        article_elements = root.findall('.//PubmedBookArticle')
+    
+    for article_elem in article_elements:
         article = {}
         
+        medline_citation = article_elem.find('MedlineCitation')
+        pubmed_data = article_elem.find('PubmedData')
+        
         # PMID
-        pmid_match = re.search(r'<PMID[^>]*>(\d+)</PMID>', article_xml)
-        if pmid_match:
-            article["pmid"] = pmid_match.group(1)
+        pmid_elem = None
+        if medline_citation is not None:
+            pmid_elem = medline_citation.find('PMID')
+        if pmid_elem is not None and pmid_elem.text:
+            article["pmid"] = pmid_elem.text
         
-        # Title
-        title_match = re.search(r'<ArticleTitle[^>]*>(.*?)</ArticleTitle>', article_xml, re.DOTALL)
-        if title_match:
-            article["title"] = clean_xml_tags(title_match.group(1))
+        # Title — handle inline tags via get_element_text
+        article_elem_inner = medline_citation.find('Article') if medline_citation is not None else None
+        if article_elem_inner is not None:
+            title_elem = article_elem_inner.find('ArticleTitle')
+            if title_elem is not None:
+                article["title"] = get_element_text(title_elem)
         
-        # Authors
+        # Authors — handle both individual and collective authors
         authors = []
-        author_pattern = r'<Author[^>]*>.*?<LastName>([^<]+)</LastName>.*?<ForeName>([^<]+)</ForeName>.*?</Author>'
-        for author_match in re.finditer(author_pattern, article_xml, re.DOTALL):
-            last_name = author_match.group(1)
-            fore_name = author_match.group(2)
-            authors.append(f"{last_name} {fore_name[0] if fore_name else ''}")
+        if article_elem_inner is not None:
+            author_list = article_elem_inner.find('AuthorList')
+            if author_list is not None:
+                for author_elem in author_list.findall('Author'):
+                    collective = author_elem.find('CollectiveName')
+                    if collective is not None and collective.text:
+                        authors.append(collective.text)
+                        continue
+                    
+                    last_name = author_elem.find('LastName')
+                    fore_name = author_elem.find('ForeName')
+                    if last_name is not None and last_name.text:
+                        last = last_name.text
+                        initial = ""
+                        if fore_name is not None and fore_name.text:
+                            initial = fore_name.text[0]
+                        authors.append(f"{last} {initial}")
         article["authors"] = authors
         
         # Journal
-        journal_match = re.search(r'<Journal[^>]*>.*?<Title>([^<]+)</Title>', article_xml, re.DOTALL)
-        if journal_match:
-            article["journal"] = journal_match.group(1)
+        if article_elem_inner is not None:
+            journal_elem = article_elem_inner.find('Journal')
+            if journal_elem is not None:
+                journal_title = journal_elem.find('Title')
+                if journal_title is not None and journal_title.text:
+                    article["journal"] = journal_title.text
         
         # Publication Year
-        year_match = re.search(r'<PubDate[^>]*>.*?<Year>(\d{4})</Year>', article_xml, re.DOTALL)
-        if year_match:
-            article["year"] = year_match.group(1)
-        else:
-            # Try MedlineDate
-            medline_match = re.search(r'<MedlineDate>(\d{4})', article_xml)
-            if medline_match:
-                article["year"] = medline_match.group(1)
+        year = None
+        if article_elem_inner is not None:
+            journal_elem = article_elem_inner.find('Journal')
+            if journal_elem is not None:
+                journal_issue = journal_elem.find('JournalIssue')
+                if journal_issue is not None:
+                    pub_date = journal_issue.find('PubDate')
+                    if pub_date is not None:
+                        year_elem = pub_date.find('Year')
+                        if year_elem is not None and year_elem.text:
+                            year = year_elem.text
+                        else:
+                            # Try MedlineDate format (e.g., "2024 Jan-Feb")
+                            medline_date = pub_date.find('MedlineDate')
+                            if medline_date is not None and medline_date.text:
+                                year_match = re.search(r'(\d{4})', medline_date.text)
+                                if year_match:
+                                    year = year_match.group(1)
+        if year:
+            article["year"] = year
         
-        # Abstract
+        # Abstract — handles structured abstracts with Label attributes
         abstract_parts = []
-        abstract_pattern = r'<AbstractText[^>]*>(.*?)</AbstractText>'
-        for abstract_match in re.finditer(abstract_pattern, article_xml, re.DOTALL):
-            abstract_parts.append(clean_xml_tags(abstract_match.group(1)))
+        if article_elem_inner is not None:
+            abstract_elem = article_elem_inner.find('Abstract')
+            if abstract_elem is not None:
+                for abstract_text in abstract_elem.findall('AbstractText'):
+                    label = abstract_text.get('Label')
+                    text_content = get_element_text(abstract_text)
+                    if label and text_content:
+                        abstract_parts.append(f"{label}: {text_content}")
+                    elif text_content:
+                        abstract_parts.append(text_content)
         if abstract_parts:
             article["abstract"] = " ".join(abstract_parts)
         
-        # DOI
-        doi_match = re.search(r'<ArticleId IdType="doi">([^<]+)</ArticleId>', article_xml)
-        if doi_match:
-            article["doi"] = doi_match.group(1)
+        # DOI — search in PubmedData ArticleIdList (more reliable)
+        doi = None
+        if pubmed_data is not None:
+            article_id_list = pubmed_data.find('ArticleIdList')
+            if article_id_list is not None:
+                for article_id in article_id_list.findall('ArticleId'):
+                    if article_id.get('IdType') == 'doi' and article_id.text:
+                        doi = article_id.text
+                        break
+        # Fallback: search in ELocationID within Article
+        if doi is None and article_elem_inner is not None:
+            for elocation in article_elem_inner.findall('ELocationID'):
+                if elocation.get('EIdType') == 'doi' and elocation.text:
+                    doi = elocation.text
+                    break
+        if doi:
+            article["doi"] = doi
         
         # MeSH Terms
         mesh_terms = []
-        mesh_pattern = r'<DescriptorName[^>]*>([^<]+)</DescriptorName>'
-        for mesh_match in re.finditer(mesh_pattern, article_xml):
-            mesh_terms.append(mesh_match.group(1))
+        if medline_citation is not None:
+            mesh_heading_list = medline_citation.find('MeshHeadingList')
+            if mesh_heading_list is not None:
+                for mesh_heading in mesh_heading_list.findall('MeshHeading'):
+                    descriptor = mesh_heading.find('DescriptorName')
+                    if descriptor is not None and descriptor.text:
+                        mesh_terms.append(descriptor.text)
         if mesh_terms:
-            article["mesh_terms"] = list(dict.fromkeys(mesh_terms))  # Remove duplicates, preserve order
+            article["mesh_terms"] = list(dict.fromkeys(mesh_terms))
         
         # URL
         if article.get("pmid"):
@@ -402,9 +557,14 @@ def format_output(
     total_count: int,
     query: str,
     explanation: str,
-    format: str = "summary"
+    format: str = "summary",
+    full_abstract: bool = False
 ) -> str:
-    """Format output for display."""
+    """Format output for display.
+    
+    P1 fix: Abstract preview length raised from 200 to 1000 chars.
+    full_abstract=True bypasses truncation entirely.
+    """
     
     if format == "json":
         output = {
@@ -447,15 +607,18 @@ def format_output(
             lines.append(f"DOI: {article['doi']}")
         
         if article.get("mesh_terms"):
-            mesh_str = ", ".join(article["mesh_terms"][:3])
-            if len(article["mesh_terms"]) > 3:
+            mesh_str = ", ".join(article["mesh_terms"][:5])
+            if len(article["mesh_terms"]) > 5:
                 mesh_str += " ..."
             lines.append(f"MeSH: {mesh_str}")
         
         if article.get("abstract"):
             abstract = article["abstract"]
-            preview = abstract[:200] + "..." if len(abstract) > 200 else abstract
-            lines.append(f"Abstract: {preview}")
+            if full_abstract:
+                lines.append(f"Abstract: {abstract}")
+            else:
+                preview = abstract[:DEFAULT_ABSTRACT_LENGTH] + "..." if len(abstract) > DEFAULT_ABSTRACT_LENGTH else abstract
+                lines.append(f"Abstract: {preview}")
         
         lines.append(f"URL: {article.get('url', 'N/A')}")
         lines.append("-" * 70)
@@ -473,6 +636,7 @@ def main():
     %(prog)s "APOE gene and Alzheimer disease" --years 5
     %(prog)s "Smith J author Alzheimer" --max 20
     %(prog)s "diabetes treatment review" --type review
+    %(prog)s "p-tau217 Abeta42 blood Alzheimer biomarker" --full-abstract
         """
     )
     
@@ -481,6 +645,9 @@ def main():
     parser.add_argument("--years", type=int, help="限制最近 N 年")
     parser.add_argument("--type", help="文章类型: review, clinical_trial, randomized, meta_analysis")
     parser.add_argument("--mesh", help="MeSH 主题词筛选")
+    parser.add_argument("--sort", choices=["relevance", "pub_date", "Author", "Journal"], default="relevance",
+                        help="排序方式: relevance(相关性), pub_date(日期), Author(作者), Journal(期刊)")
+    parser.add_argument("--full-abstract", action="store_true", help="显示完整摘要（不截断）")
     parser.add_argument("--format", choices=["json", "summary"], default="summary", help="输出格式")
     parser.add_argument("--output", "-o", help="保存到文件")
     parser.add_argument("--api-key", help="NCBI API key")
@@ -490,45 +657,60 @@ def main():
     
     api_key = get_api_key(args)
     
-    # Detect query elements
-    elements = detect_query_elements(args.query)
+    # P2 fix: Network error handling
+    try:
+        # Detect query elements
+        elements = detect_query_elements(args.query)
+        
+        if args.verbose:
+            print(f"检测到的元素: {json.dumps(elements, ensure_ascii=False, indent=2)}", file=sys.stderr)
+        
+        # Build PubMed query
+        pubmed_query, explanation = build_pubmed_query(
+            args.query,
+            elements,
+            years=args.years,
+            article_type=args.type,
+            mesh_filter=args.mesh
+        )
+        
+        if args.verbose:
+            print(f"PubMed 检索式: {pubmed_query}", file=sys.stderr)
+        
+        # Search
+        search_result = search_pubmed(pubmed_query, args.max, api_key, args.sort, args.verbose)
+        pmids = search_result["ids"]
+        total = search_result["count"]
+        
+        if args.verbose:
+            print(f"找到 {total} 篇文献, 获取 {len(pmids)} 篇...", file=sys.stderr)
+        
+        # Fetch articles
+        articles = fetch_articles(pmids, api_key, args.verbose) if pmids else []
+        
+        # Format output
+        output = format_output(articles, total, pubmed_query, explanation, args.format, args.full_abstract)
+        
+        # Print or save
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(output)
+            print(f"已保存到 {args.output}", file=sys.stderr)
+        else:
+            print(output)
     
-    if args.verbose:
-        print(f"检测到的元素: {json.dumps(elements, ensure_ascii=False, indent=2)}", file=sys.stderr)
-    
-    # Build PubMed query
-    pubmed_query, explanation = build_pubmed_query(
-        args.query,
-        elements,
-        years=args.years,
-        article_type=args.type,
-        mesh_filter=args.mesh
-    )
-    
-    if args.verbose:
-        print(f"PubMed 检索式: {pubmed_query}", file=sys.stderr)
-    
-    # Search
-    search_result = search_pubmed(pubmed_query, args.max, api_key, args.verbose)
-    pmids = search_result["ids"]
-    total = search_result["count"]
-    
-    if args.verbose:
-        print(f"找到 {total} 篇文献, 获取 {len(pmids)} 篇...", file=sys.stderr)
-    
-    # Fetch articles
-    articles = fetch_articles(pmids, api_key, args.verbose) if pmids else []
-    
-    # Format output
-    output = format_output(articles, total, pubmed_query, explanation, args.format)
-    
-    # Print or save
-    if args.output:
-        with open(args.output, "w", encoding="utf-8") as f:
-            f.write(output)
-        print(f"已保存到 {args.output}", file=sys.stderr)
-    else:
-        print(output)
+    except requests.exceptions.ConnectionError:
+        print("Error: 无法连接到 NCBI 服务器，请检查网络连接。", file=sys.stderr)
+        sys.exit(1)
+    except requests.exceptions.Timeout:
+        print("Error: NCBI 服务器响应超时，请稍后重试或减少结果数(--max)。", file=sys.stderr)
+        sys.exit(1)
+    except requests.exceptions.HTTPError as e:
+        print(f"Error: NCBI 服务器返回错误: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

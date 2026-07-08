@@ -7,13 +7,32 @@ Shared utilities for NCBI E-Utilities API calls with built-in SQLite caching.
 
 import os
 import sys
+
+# P0 fix: Windows GBK encoding crash — reconfigure stdout/stderr to UTF-8
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except AttributeError:
+        # Python < 3.7 doesn't have reconfigure; fallback to wrapper
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+# P3 fix: Check for requests library with helpful error message
+try:
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+except ImportError:
+    print("Error: 'requests' library is required but not installed.", file=sys.stderr)
+    print("Please install it with: pip install requests", file=sys.stderr)
+    sys.exit(1)
+
 import time
 import sqlite3
 import hashlib
 import json
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from typing import Optional
 
 # Rate limiting state
@@ -67,6 +86,21 @@ def clean_xml_tags(text: str) -> str:
     return text.strip()
 
 
+def get_element_text(element) -> str:
+    """Recursively extract all text content from an ElementTree element.
+    
+    Handles mixed content (text with inline tags like <i>, <b>, <sub>).
+    """
+    text_parts = []
+    if element.text:
+        text_parts.append(element.text)
+    for child in element:
+        text_parts.append(get_element_text(child))
+        if child.tail:
+            text_parts.append(child.tail)
+    return "".join(text_parts).strip()
+
+
 def init_cache():
     """Initialize the SQLite database for caching."""
     if os.environ.get("NCBI_NO_CACHE") == "1":
@@ -91,7 +125,10 @@ def init_cache():
 
 def get_cache_key(url: str, params: dict) -> str:
     """Generate a unique SHA256 key for URL and sorted params."""
-    serialized_params = json.dumps(params, sort_keys=True)
+    # P3 fix: Exclude api_key from cache key to share cache across different keys
+    # (NCBI returns the same data regardless of which API key is used)
+    cache_params = {k: v for k, v in params.items() if k != "api_key"}
+    serialized_params = json.dumps(cache_params, sort_keys=True)
     raw_key = f"{url}?{serialized_params}"
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 

@@ -6,7 +6,7 @@ Intelligent search across NCBI databases using E-Utilities API.
 Automatically detects search intent and routes to appropriate database.
 
 Supported databases:
-- pubmed: Literature search
+- pubmed: Literature search (uses EFetch for full abstracts)
 - gene: Gene information
 - protein: Protein sequences
 - nucleotide: Nucleotide sequences
@@ -28,21 +28,30 @@ import sys
 import json
 import argparse
 import re
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
-# Ensure we can import ncbi_utils from the same directory
+# Ensure we can import ncbi_utils and pubmed_search from the same directory
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
-    from ncbi_utils import http_get
+    from ncbi_utils import http_get, get_element_text
 except ImportError:
     print("Error: Could not import ncbi_utils.py from the scripts directory.", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    import requests
+except ImportError:
+    # ncbi_utils already handles this, but just in case
+    print("Error: 'requests' library is required. Install with: pip install requests", file=sys.stderr)
     sys.exit(1)
 
 # NCBI E-Utilities Base URLs
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 ESEARCH_URL = f"{EUTILS_BASE}/esearch.fcgi"
 ESUMMARY_URL = f"{EUTILS_BASE}/esummary.fcgi"
+EFETCH_URL = f"{EUTILS_BASE}/efetch.fcgi"
 
 # Database configurations
 DATABASES = {
@@ -136,6 +145,9 @@ ACADEMIC_STOP_WORDS = {
     "COVID", "COVID-19", "SARS", "SARS-COV-2", "MERS", "HIV"
 }
 
+# Default abstract preview length (raised from 200 to 1000)
+DEFAULT_ABSTRACT_LENGTH = 1000
+
 
 def get_api_key(args: argparse.Namespace) -> Optional[str]:
     """Get NCBI API key from args or environment."""
@@ -155,6 +167,8 @@ def detect_database(query: str) -> str:
     4. Database keywords matching (non-pubmed high specificity keywords)
     5. General Gene symbol pattern (regex match) -> gene / pubmed
     6. Default -> pubmed
+    
+    P2 fix: Removed duplicate dead code block (old lines 224-236).
     """
     query_lower = query.lower()
     
@@ -184,7 +198,7 @@ def detect_database(query: str) -> str:
             return "pubmed"
         return "gene"
         
-    # 4. Check database keywords (focus on specific ones)
+    # 4. Check database keywords (focus on specific ones — P2 fix: no duplicate)
     db_scores = {}
     for db_name, db_info in DATABASES.items():
         if db_name == "pubmed":
@@ -221,20 +235,6 @@ def detect_database(query: str) -> str:
             return "pubmed"
         return "gene"
     
-    # 4. Check database keywords
-    db_scores = {}
-    for db_name, db_info in DATABASES.items():
-        score = 0
-        for keyword in db_info["keywords"]:
-            if keyword in query_lower:
-                score += 1
-        if score > 0:
-            db_scores[db_name] = score
-    
-    # Return highest scoring database
-    if db_scores:
-        return max(db_scores, key=db_scores.get)
-    
     # Default to PubMed
     return "pubmed"
 
@@ -245,6 +245,7 @@ def search_database(
     max_results: int = 10,
     api_key: Optional[str] = None,
     organism: Optional[str] = None,
+    sort: str = "relevance",
     verbose: bool = False
 ) -> Dict[str, Any]:
     """Search any NCBI database using shared http_get utility."""
@@ -259,7 +260,7 @@ def search_database(
         "term": search_query,
         "retmax": max_results,
         "retmode": "json",
-        "sort": "relevance"
+        "sort": sort  # P3 fix: allow sort order
     }
     
     if api_key:
@@ -310,8 +311,169 @@ def fetch_summary(
     return records
 
 
-def format_pubmed_results(records: List[Dict], total: int, query: str) -> str:
-    """Format PubMed results."""
+def fetch_pubmed_articles(
+    ids: List[str],
+    api_key: Optional[str] = None,
+    verbose: bool = False
+) -> List[Dict[str, Any]]:
+    """
+    P0 fix: Fetch PubMed articles using EFetch instead of ESummary.
+    ESummary does NOT return abstracts — EFetch does.
+    """
+    if not ids:
+        return []
+    
+    params = {
+        "db": "pubmed",
+        "id": ",".join(ids),
+        "rettype": "xml",
+        "retmode": "xml"
+    }
+    
+    if api_key:
+        params["api_key"] = api_key
+        
+    response_text = http_get(EFETCH_URL, params=params, api_key=api_key, timeout=60, verbose=verbose)
+    return parse_pubmed_xml(response_text)
+
+
+def parse_pubmed_xml(xml_text: str) -> List[Dict[str, Any]]:
+    """Parse PubMed XML response using ElementTree for robustness."""
+    articles = []
+    
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as e:
+        print(f"Warning: Failed to parse PubMed XML: {e}", file=sys.stderr)
+        return articles
+    
+    article_elements = root.findall('.//PubmedArticle')
+    
+    for article_elem in article_elements:
+        article = {}
+        
+        medline_citation = article_elem.find('MedlineCitation')
+        pubmed_data = article_elem.find('PubmedData')
+        
+        # PMID
+        pmid_elem = None
+        if medline_citation is not None:
+            pmid_elem = medline_citation.find('PMID')
+        if pmid_elem is not None and pmid_elem.text:
+            article["pmid"] = pmid_elem.text
+        
+        # Title
+        article_elem_inner = medline_citation.find('Article') if medline_citation is not None else None
+        if article_elem_inner is not None:
+            title_elem = article_elem_inner.find('ArticleTitle')
+            if title_elem is not None:
+                article["title"] = get_element_text(title_elem)
+        
+        # Authors
+        authors = []
+        if article_elem_inner is not None:
+            author_list = article_elem_inner.find('AuthorList')
+            if author_list is not None:
+                for author_elem in author_list.findall('Author'):
+                    collective = author_elem.find('CollectiveName')
+                    if collective is not None and collective.text:
+                        authors.append(collective.text)
+                        continue
+                    last_name = author_elem.find('LastName')
+                    fore_name = author_elem.find('ForeName')
+                    if last_name is not None and last_name.text:
+                        last = last_name.text
+                        initial = ""
+                        if fore_name is not None and fore_name.text:
+                            initial = fore_name.text[0]
+                        authors.append(f"{last} {initial}")
+        article["authors"] = authors
+        
+        # Journal
+        if article_elem_inner is not None:
+            journal_elem = article_elem_inner.find('Journal')
+            if journal_elem is not None:
+                journal_title = journal_elem.find('Title')
+                if journal_title is not None and journal_title.text:
+                    article["journal"] = journal_title.text
+        
+        # Publication Year
+        year = None
+        if article_elem_inner is not None:
+            journal_elem = article_elem_inner.find('Journal')
+            if journal_elem is not None:
+                journal_issue = journal_elem.find('JournalIssue')
+                if journal_issue is not None:
+                    pub_date = journal_issue.find('PubDate')
+                    if pub_date is not None:
+                        year_elem = pub_date.find('Year')
+                        if year_elem is not None and year_elem.text:
+                            year = year_elem.text
+                        else:
+                            medline_date = pub_date.find('MedlineDate')
+                            if medline_date is not None and medline_date.text:
+                                year_match = re.search(r'(\d{4})', medline_date.text)
+                                if year_match:
+                                    year = year_match.group(1)
+        if year:
+            article["year"] = year
+        
+        # Abstract (P0 fix: now included in PubMed results!)
+        abstract_parts = []
+        if article_elem_inner is not None:
+            abstract_elem = article_elem_inner.find('Abstract')
+            if abstract_elem is not None:
+                for abstract_text in abstract_elem.findall('AbstractText'):
+                    label = abstract_text.get('Label')
+                    text_content = get_element_text(abstract_text)
+                    if label and text_content:
+                        abstract_parts.append(f"{label}: {text_content}")
+                    elif text_content:
+                        abstract_parts.append(text_content)
+        if abstract_parts:
+            article["abstract"] = " ".join(abstract_parts)
+        
+        # DOI
+        doi = None
+        if pubmed_data is not None:
+            article_id_list = pubmed_data.find('ArticleIdList')
+            if article_id_list is not None:
+                for article_id in article_id_list.findall('ArticleId'):
+                    if article_id.get('IdType') == 'doi' and article_id.text:
+                        doi = article_id.text
+                        break
+        if doi is None and article_elem_inner is not None:
+            for elocation in article_elem_inner.findall('ELocationID'):
+                if elocation.get('EIdType') == 'doi' and elocation.text:
+                    doi = elocation.text
+                    break
+        if doi:
+            article["doi"] = doi
+        
+        # MeSH Terms
+        mesh_terms = []
+        if medline_citation is not None:
+            mesh_heading_list = medline_citation.find('MeshHeadingList')
+            if mesh_heading_list is not None:
+                for mesh_heading in mesh_heading_list.findall('MeshHeading'):
+                    descriptor = mesh_heading.find('DescriptorName')
+                    if descriptor is not None and descriptor.text:
+                        mesh_terms.append(descriptor.text)
+        if mesh_terms:
+            article["mesh_terms"] = list(dict.fromkeys(mesh_terms))
+        
+        # URL
+        if article.get("pmid"):
+            article["url"] = f"https://pubmed.ncbi.nlm.nih.gov/{article['pmid']}/"
+        
+        if article.get("pmid"):
+            articles.append(article)
+    
+    return articles
+
+
+def format_pubmed_results(records: List[Dict], total: int, query: str, full_abstract: bool = False) -> str:
+    """Format PubMed results — P0 fix: now includes abstracts."""
     lines = []
     lines.append("=" * 70)
     lines.append("PubMed Search Results")
@@ -321,28 +483,53 @@ def format_pubmed_results(records: List[Dict], total: int, query: str) -> str:
     lines.append("=" * 70)
     
     for i, record in enumerate(records, 1):
-        lines.append(f"\n[{i}] PMID: {record.get('_id', 'N/A')}")
+        lines.append(f"\n[{i}] PMID: {record.get('pmid', record.get('_id', 'N/A'))}")
         lines.append(f"Title: {record.get('title', 'N/A')}")
         
+        # Authors — handle both EFetch format (list of strings) and ESummary format (list of dicts)
         authors = record.get("authors", [])
         if authors:
-            author_names = [a.get("name", "") for a in authors[:5] if isinstance(a, dict)]
-            author_str = ", ".join(author_names)
+            if isinstance(authors[0], dict):
+                # ESummary format
+                author_names = [a.get("name", "") for a in authors[:5] if isinstance(a, dict)]
+                author_str = ", ".join(author_names)
+            else:
+                # EFetch format
+                author_str = ", ".join(authors[:5])
             if len(authors) > 5:
-                author_str += f" et al."
+                author_str += f" et al. ({len(authors)} authors)"
             lines.append(f"Authors: {author_str}")
         
-        # Extract year from pubdate
-        pubdate = record.get("pubdate", "")
-        year = pubdate.split()[0] if pubdate else "N/A"
+        # Year — handle both formats
+        year = record.get("year", "N/A")
+        if year == "N/A":
+            pubdate = record.get("pubdate", "")
+            year = pubdate.split()[0] if pubdate else "N/A"
         
-        journal = record.get("fulljournalname", record.get("source", "N/A"))
+        # Journal — handle both formats
+        journal = record.get("journal", record.get("fulljournalname", record.get("source", "N/A")))
         lines.append(f"Journal: {journal} ({year})")
         
         if record.get("doi"):
             lines.append(f"DOI: {record['doi']}")
         
-        lines.append(f"URL: https://pubmed.ncbi.nlm.nih.gov/{record.get('_id')}/")
+        # P0 fix: Abstract is now included!
+        if record.get("abstract"):
+            abstract = record["abstract"]
+            if full_abstract:
+                lines.append(f"Abstract: {abstract}")
+            else:
+                preview = abstract[:DEFAULT_ABSTRACT_LENGTH] + "..." if len(abstract) > DEFAULT_ABSTRACT_LENGTH else abstract
+                lines.append(f"Abstract: {preview}")
+        
+        # MeSH terms (only from EFetch)
+        if record.get("mesh_terms"):
+            mesh_str = ", ".join(record["mesh_terms"][:5])
+            if len(record["mesh_terms"]) > 5:
+                mesh_str += " ..."
+            lines.append(f"MeSH: {mesh_str}")
+        
+        lines.append(f"URL: https://pubmed.ncbi.nlm.nih.gov/{record.get('pmid', record.get('_id'))}/")
         lines.append("-" * 70)
     
     return "\n".join(lines)
@@ -440,10 +627,10 @@ def format_generic_results(records: List[Dict], total: int, query: str, database
     return "\n".join(lines)
 
 
-def format_results(records: List[Dict], total: int, query: str, database: str) -> str:
+def format_results(records: List[Dict], total: int, query: str, database: str, full_abstract: bool = False) -> str:
     """Format results based on database type."""
     if database == "pubmed":
-        return format_pubmed_results(records, total, query)
+        return format_pubmed_results(records, total, query, full_abstract)
     elif database == "gene":
         return format_gene_results(records, total, query)
     elif database == "snp":
@@ -471,8 +658,11 @@ Examples:
     %(prog)s "APOE" --db gene --organism human
     %(prog)s "insulin" --db protein
     
-    # PubMed with filters
-    %(prog)s "diabetes" --db pubmed --years 5 --type review
+    # PubMed with filters and full abstracts
+    %(prog)s "diabetes" --db pubmed --years 5 --type review --full-abstract
+    
+    # Sort by date
+    %(prog)s "Alzheimer" --db pubmed --sort pub_date --max 20
         """
     )
     
@@ -482,6 +672,9 @@ Examples:
     parser.add_argument("--years", type=int, help="Years filter (PubMed only)")
     parser.add_argument("--type", help="Article type (PubMed only): review, clinical_trial, etc.")
     parser.add_argument("--organism", help="Organism filter (Gene only)")
+    parser.add_argument("--sort", choices=["relevance", "pub_date", "Author", "Journal"], default="relevance",
+                        help="Sort order: relevance, pub_date, Author, Journal")
+    parser.add_argument("--full-abstract", action="store_true", help="Show full abstracts without truncation (PubMed only)")
     parser.add_argument("--format", choices=["json", "summary"], default="summary")
     parser.add_argument("--output", "-o", help="Save to file")
     parser.add_argument("--api-key", help="NCBI API key")
@@ -491,61 +684,80 @@ Examples:
     
     api_key = get_api_key(args)
     
-    # Detect or use specified database
-    database = args.db if args.db else detect_database(args.query)
+    # P2 fix: Network error handling
+    try:
+        # Detect or use specified database
+        database = args.db if args.db else detect_database(args.query)
+        
+        if args.verbose:
+            print(f"Database: {DATABASES[database]['name']}", file=sys.stderr)
+            print(f"Query: {args.query}", file=sys.stderr)
+        
+        # Build query with filters
+        query = args.query
+        
+        # PubMed-specific filters
+        if database == "pubmed":
+            if args.years:
+                end = datetime.now()
+                start = end - timedelta(days=args.years * 365)
+                query = f"({query}) AND {start.strftime('%Y/%m/%d')}:{end.strftime('%Y/%m/%d')}[PDat]"
+            if args.type:
+                type_map = {
+                    "review": "Review[pt]",
+                    "clinical_trial": "Clinical Trial[pt]",
+                    "randomized": "Randomized Controlled Trial[pt]",
+                    "meta_analysis": "Meta-Analysis[pt]",
+                }
+                if args.type in type_map:
+                    query = f"({query}) AND {type_map[args.type]}"
+        
+        # Search
+        search_result = search_database(query, database, args.max, api_key, args.organism, args.sort, args.verbose)
+        ids = search_result["ids"]
+        total = search_result["count"]
+        
+        if args.verbose:
+            print(f"Found {total} results", file=sys.stderr)
+        
+        # P0 fix: For PubMed, use EFetch (returns full abstracts)
+        # For other databases, use ESummary
+        if database == "pubmed":
+            records = fetch_pubmed_articles(ids, api_key, args.verbose) if ids else []
+        else:
+            records = fetch_summary(ids, database, api_key, args.verbose) if ids else []
+        
+        # Format output
+        if args.format == "json":
+            output = json.dumps({
+                "database": database,
+                "query": query,
+                "total_count": total,
+                "records": records
+            }, indent=2, ensure_ascii=False)
+        else:
+            output = format_results(records, total, query, database, args.full_abstract)
+        
+        # Print or save
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(output)
+            print(f"Saved to {args.output}", file=sys.stderr)
+        else:
+            print(output)
     
-    if args.verbose:
-        print(f"Database: {DATABASES[database]['name']}", file=sys.stderr)
-        print(f"Query: {args.query}", file=sys.stderr)
-    
-    # Build query with filters
-    query = args.query
-    
-    # PubMed-specific filters
-    if database == "pubmed":
-        if args.years:
-            end = datetime.now()
-            start = end - timedelta(days=args.years * 365)
-            query = f"({query}) AND {start.strftime('%Y/%m/%d')}:{end.strftime('%Y/%m/%d')}[PDat]"
-        if args.type:
-            type_map = {
-                "review": "Review[pt]",
-                "clinical_trial": "Clinical Trial[pt]",
-                "randomized": "Randomized Controlled Trial[pt]",
-                "meta_analysis": "Meta-Analysis[pt]",
-            }
-            if args.type in type_map:
-                query = f"({query}) AND {type_map[args.type]}"
-    
-    # Search
-    search_result = search_database(query, database, args.max, api_key, args.organism, args.verbose)
-    ids = search_result["ids"]
-    total = search_result["count"]
-    
-    if args.verbose:
-        print(f"Found {total} results", file=sys.stderr)
-    
-    # Fetch summaries
-    records = fetch_summary(ids, database, api_key, args.verbose) if ids else []
-    
-    # Format output
-    if args.format == "json":
-        output = json.dumps({
-            "database": database,
-            "query": query,
-            "total_count": total,
-            "records": records
-        }, indent=2, ensure_ascii=False)
-    else:
-        output = format_results(records, total, query, database)
-    
-    # Print or save
-    if args.output:
-        with open(args.output, "w", encoding="utf-8") as f:
-            f.write(output)
-        print(f"Saved to {args.output}", file=sys.stderr)
-    else:
-        print(output)
+    except requests.exceptions.ConnectionError:
+        print("Error: 无法连接到 NCBI 服务器，请检查网络连接。", file=sys.stderr)
+        sys.exit(1)
+    except requests.exceptions.Timeout:
+        print("Error: NCBI 服务器响应超时，请稍后重试或减少结果数(--max)。", file=sys.stderr)
+        sys.exit(1)
+    except requests.exceptions.HTTPError as e:
+        print(f"Error: NCBI 服务器返回错误: {e}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {type(e).__name__}: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

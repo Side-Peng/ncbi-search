@@ -1,13 +1,13 @@
 ---
 name: ncbi-search
-description: "Search NCBI databases using E-Utilities API (official, free). Supports 10+ databases: PubMed (literature), Gene, Protein, Nucleotide, dbSNP, ClinVar, Taxonomy, BioSample, Assembly, SRA. Automatically detects search intent and routes to appropriate database. Returns formatted results with key information. Use for biomedical literature, gene information, protein sequences, genetic variants, and more."
+description: "Search NCBI databases using E-Utilities API (official, free). Supports 10+ databases: PubMed (literature), Gene, Protein, Nucleotide, dbSNP, ClinVar, Taxonomy, BioSample, Assembly, SRA. Automatically detects search intent and routes to appropriate database. Returns formatted results with key information including full abstracts for PubMed. Use for biomedical literature, gene information, protein sequences, genetic variants, and more."
 allowed-tools: [Bash]
 trigger-keywords: [ncbi, pubmed, gene, protein, snp, clinvar, literature, paper, article, review, variant, genome, sequence, taxonomy, dna, rna]
 ---
 
 # NCBI Search — AI Agent 工具文档
 
-> **一句话描述**: NCBI 多数据库智能检索工具，使用官方 E-Utilities API，免费、可靠、零外部依赖。
+> **一句话描述**: NCBI 多数据库智能检索工具，使用官方 E-Utilities API，免费、可靠、零外部依赖（除 requests）。
 
 ---
 
@@ -25,6 +25,7 @@ trigger-keywords: [ncbi, pubmed, gene, protein, snp, clinvar, literature, paper,
 10. [缓存机制](#10-缓存机制)
 11. [API Key 配置](#11-api-key-配置)
 12. [文件结构](#12-文件结构)
+13. [更新日志](#13-更新日志)
 
 ---
 
@@ -75,6 +76,7 @@ AI Agent 请按以下优先级判断使用哪个数据库：
 | 用户提到"文献/论文"时用 `--db pubmed` | 不要对含基因符号的查询直接路由到 Gene（先检查是否要查文献） |
 | 用户给 rsID 时用 `--db snp` | 不要用 `--db snp` 查非 SNP 内容 |
 | 不确定时默认用 PubMed | 不要同时查多个数据库（需分步执行） |
+| 需要完整摘要时加 `--full-abstract` | 不要假设摘要会自动截断到 200 字符（现已改为 1000） |
 
 ---
 
@@ -95,19 +97,6 @@ AI Agent 请按以下优先级判断使用哪个数据库：
 | **Assembly** | `assembly` | 基因组组装 | assembly, genome assembly, 基因组组装 | Assembly ID | `https://www.ncbi.nlm.nih.gov/assembly/{ID}` |
 | **SRA** | `sra` | 测序数据归档 | SRA, sequencing, reads, 测序数据 | SRA ID（SRR/ERR/DRR） | `https://www.ncbi.nlm.nih.gov/sra/{ID}` |
 
-### 2.2 数据库选择建议
-
-| 用户意图 | 推荐数据库 | 说明 |
-|---------|-----------|------|
-| 查某疾病的文献 | `pubmed` | 最全面的生物医学文献库 |
-| 查某个基因的功能 | `gene` | 包含基因位置、功能、别名等 |
-| 查蛋白质序列 | `protein` | 包含 FASTA 序列 |
-| 查 DNA/RNA 序列 | `nucleotide` | 包含 GenBank 序列 |
-| 查某个 SNP 位点 | `snp` | 包含等位基因频率、临床意义 |
-| 查变异与疾病关系 | `clinvar` | 临床级别的变异注释 |
-| 查物种分类信息 | `taxonomy` | 完整的物种分类树 |
-| 查测序数据 | `sra` | 高通量测序原始数据 |
-
 ---
 
 ## 3. 使用方式
@@ -118,15 +107,15 @@ AI Agent 请按以下优先级判断使用哪个数据库：
 
 | 脚本 | 功能 | 适用场景 |
 |------|------|---------|
-| `ncbi_search.py` | **主脚本**：多数据库智能搜索，自动意图识别 | 大多数情况，推荐使用 |
-| `pubmed_search.py` | **PubMed 专用**：自然语言转检索式，MeSH 词识别 | 仅 PubMed 检索，需要智能解析 |
-| `pubmed_fetch.py` | **批量获取**：通过 PMID 列表批量获取文献详情 | 已有 PMID 列表，需要批量获取 |
-| `ncbi_utils.py` | **工具函数**：共享工具函数 | 被其他脚本调用，不直接使用 |
+| `ncbi_search.py` | **主脚本**：多数据库智能搜索，自动意图识别，PubMed 使用 EFetch 获取完整摘要 | 大多数情况，推荐使用 |
+| `pubmed_search.py` | **PubMed 专用**：自然语言转检索式，MeSH 词识别（含多词短语） | 仅 PubMed 检索，需要智能解析 |
+| `pubmed_fetch.py` | **批量获取**：通过 PMID 列表批量获取文献详情，支持 200 PMID 分批 | 已有 PMID 列表，需要批量获取 |
+| `ncbi_utils.py` | **工具函数**：共享工具函数、缓存、编码修复 | 被其他脚本调用，不直接使用 |
 
 ### 3.2 自动模式（推荐）
 
 ```bash
-# 自动判断搜索意图
+# 自动判断搜索意图（PubMed 现在返回完整摘要！）
 python scripts/ncbi_search.py "APOE gene"
 python scripts/ncbi_search.py "Alzheimer disease review"
 python scripts/ncbi_search.py "insulin protein"
@@ -137,17 +126,19 @@ python scripts/ncbi_search.py "rs429358"
 
 ```bash
 python scripts/ncbi_search.py "APOE" --db gene
-python scripts/ncbi_search.py "diabetes" --db pubmed
+python scripts/ncbi_search.py "diabetes" --db pubmed --full-abstract
 python scripts/ncbi_search.py "rs429358" --db snp
 ```
 
 ### 3.4 PubMed 专用脚本（自然语言检索）
 
 ```bash
-# 自动将自然语言转换为 PubMed 检索式
+# 自然语言查询 — 现采用宽松策略，不强制每个词加 [Title/Abstract]
 python scripts/pubmed_search.py "Alzheimer disease cerebrovascular mechanisms"
+python scripts/pubmed_search.py "p-tau217 Abeta42 blood plasma Alzheimer biomarker" --full-abstract
 python scripts/pubmed_search.py "APOE gene and Alzheimer disease" --years 5
 python scripts/pubmed_search.py "Smith J author Alzheimer" --max 20
+python scripts/pubmed_search.py "diabetes treatment" --sort pub_date --max 20
 ```
 
 ---
@@ -164,6 +155,8 @@ python scripts/pubmed_search.py "Smith J author Alzheimer" --max 20
 | `--years` | int | - | **仅 pubmed** | 限制最近 N 年 |
 | `--type` | str | - | **仅 pubmed** | 文章类型过滤 |
 | `--organism` | str | - | **仅 gene** | 物种过滤 |
+| `--sort` | str | relevance | 全部 | 排序方式：relevance, pub_date, Author, Journal |
+| `--full-abstract` | bool | false | **仅 pubmed** | 显示完整摘要（不截断） |
 | `--format` | str | summary | 全部 | 输出格式：summary 或 json |
 | `--output` / `-o` | str | - | 全部 | 保存结果到文件 |
 | `--api-key` | str | env var | 全部 | NCBI API Key |
@@ -178,12 +171,27 @@ python scripts/pubmed_search.py "Smith J author Alzheimer" --max 20
 | `--years` | int | - | 限制最近 N 年 |
 | `--type` | str | - | 文章类型：review, clinical_trial, randomized, meta_analysis |
 | `--mesh` | str | - | MeSH 主题词筛选 |
+| `--sort` | str | relevance | 排序方式：relevance, pub_date, Author, Journal |
+| `--full-abstract` | bool | false | 显示完整摘要（不截断） |
 | `--format` | str | summary | 输出格式：summary 或 json |
 | `--output` / `-o` | str | - | 保存结果到文件 |
 | `--api-key` | str | env var | NCBI API Key |
 | `--verbose` / `-v` | bool | false | 显示详细信息 |
 
-### 4.3 --type 参数可选值
+### 4.3 pubmed_fetch.py 参数
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `pmids` | 必填 | - | PMID 列表 |
+| `--file` / `-f` | str | - | 从文件读取 PMID 列表 |
+| `--format` | str | json | 输出格式：summary 或 json |
+| `--full-abstract` | bool | false | 显示完整摘要（不截断） |
+| `--batch-size` | int | 200 | 每批获取的最大 PMID 数 |
+| `--output` / `-o` | str | - | 保存结果到文件 |
+| `--api-key` | str | env var | NCBI API Key |
+| `--verbose` / `-v` | bool | false | 显示详细信息 |
+
+### 4.4 --type 参数可选值
 
 | 值 | 含义 | PubMed 标签 |
 |----|------|-------------|
@@ -192,16 +200,27 @@ python scripts/pubmed_search.py "Smith J author Alzheimer" --max 20
 | `randomized` | 随机对照试验 | `Randomized Controlled Trial[pt]` |
 | `meta_analysis` | Meta 分析 | `Meta-Analysis[pt]` |
 
-### 4.4 参数组合规则
+### 4.5 --sort 参数可选值
+
+| 值 | 含义 | 适用场景 |
+|----|------|---------|
+| `relevance` | 相关性排序（默认） | 一般检索 |
+| `pub_date` | 按出版日期排序 | 查看最新文献 |
+| `Author` | 按作者排序 | 查找某作者的文献 |
+| `Journal` | 按期刊排序 | 期刊浏览 |
+
+### 4.6 参数组合规则
 
 | 组合 | 是否合法 | 说明 |
 |------|---------|------|
 | `--db pubmed --years 5` | ✅ 合法 | PubMed 限定年份 |
 | `--db pubmed --type review` | ✅ 合法 | PubMed 限定文章类型 |
+| `--db pubmed --full-abstract` | ✅ 合法 | PubMed 显示完整摘要 |
+| `--db pubmed --sort pub_date` | ✅ 合法 | PubMed 按日期排序 |
 | `--db gene --organism human` | ✅ 合法 | Gene 限定物种 |
 | `--db snp --years 5` | ❌ 无效 | `--years` 仅适用于 PubMed |
 | `--db protein --organism human` | ❌ 无效 | `--organism` 仅适用于 Gene |
-| `--db pubmed --organism human` | ❌ 无效 | `--organism` 仅适用于 Gene |
+| `--db gene --full-abstract` | ❌ 无效 | `--full-abstract` 仅适用于 PubMed |
 
 ---
 
@@ -210,9 +229,9 @@ python scripts/pubmed_search.py "Smith J author Alzheimer" --max 20
 ### 5.1 基础示例
 
 ```bash
-# 自动模式
+# 自动模式（PubMed 现在返回完整摘要）
 python scripts/ncbi_search.py "APOE gene"                    # → Gene
-python scripts/ncbi_search.py "Alzheimer disease review"     # → PubMed
+python scripts/ncbi_search.py "Alzheimer disease review"     # → PubMed (with abstract)
 python scripts/ncbi_search.py "rs429358"                     # → dbSNP
 python scripts/ncbi_search.py "insulin protein"              # → Protein
 python scripts/ncbi_search.py "Escherichia coli taxonomy"    # → Taxonomy
@@ -226,9 +245,9 @@ python scripts/ncbi_search.py "BRCA1" --db nucleotide
 ### 5.2 组合参数示例
 
 ```bash
-# PubMed 高级过滤
-python scripts/ncbi_search.py "diabetes treatment" --years 5 --type review --max 20
-python scripts/ncbi_search.py "Alzheimer amyloid beta" --years 3 --max 5
+# PubMed 高级过滤（含完整摘要）
+python scripts/ncbi_search.py "diabetes treatment" --years 5 --type review --max 20 --full-abstract
+python scripts/ncbi_search.py "Alzheimer amyloid beta" --years 3 --max 5 --sort pub_date
 python scripts/ncbi_search.py "COVID-19 vaccine" --type clinical_trial --max 50
 
 # Gene 高级过滤
@@ -245,15 +264,29 @@ python scripts/ncbi_search.py "Alzheimer disease" --years 5 --max 100 -o results
 ### 5.3 PubMed 自然语言检索示例
 
 ```bash
-# 使用 pubmed_search.py 进行智能解析
+# 自然语言查询（宽松策略，不再强制每个词加 [Title/Abstract]）
 python scripts/pubmed_search.py "Alzheimer disease cerebrovascular mechanisms"
+python scripts/pubmed_search.py "p-tau217 Abeta42 ratio blood plasma Alzheimer" --full-abstract
 python scripts/pubmed_search.py "APOE gene and Alzheimer disease" --years 5
 python scripts/pubmed_search.py "Smith J author Alzheimer" --max 20
 python scripts/pubmed_search.py "diabetes treatment review" --type review
-python scripts/pubmed_search.py "cancer immunotherapy" --mesh "Neoplasms" --years 3
+python scripts/pubmed_search.py "cancer immunotherapy" --mesh "Neoplasms" --years 3 --sort pub_date
 ```
 
-### 5.4 边界情况示例
+### 5.4 批量获取示例
+
+```bash
+# 通过 PMID 列表获取（自动分批，每批 200 个）
+python scripts/pubmed_fetch.py 33597265 34239348 35022842 --full-abstract
+
+# 从文件读取大量 PMID（自动分批处理）
+python scripts/pubmed_fetch.py -f pmids.txt --format summary --full-abstract -o results.txt
+
+# 指定输出格式
+python scripts/pubmed_fetch.py 33597265 34239348 --format json
+```
+
+### 5.5 边界情况示例
 
 ```bash
 # 无结果查询
@@ -277,15 +310,18 @@ python scripts/ncbi_search.py "APOE 基因" --db gene
 
 ### 6.1 PubMed 检索式构建
 
-`pubmed_search.py` 会自动将自然语言转换为标准 PubMed 检索式。转换逻辑如下：
+`pubmed_search.py` 的自然语言转换采用**宽松策略**（v2 修复）：
 
 | 自然语言 | 转换后 | 说明 |
 |---------|--------|------|
-| `Alzheimer disease` | `"Alzheimer Disease"[MeSH]` | 识别为 MeSH 词 |
+| `Alzheimer disease` | `"Alzheimer Disease"[MeSH]` | 多词 MeSH 短语匹配 |
 | `APOE gene` | `APOE[Title/Abstract]` | 识别为基因符号 |
+| `p-tau217 Abeta42 Alzheimer` | `(p-tau217 Abeta42) AND "Alzheimer Disease"[MeSH]` | 非MeSH词作为原始关键词组 |
 | `Smith J` | `Smith J[Author]` | 识别为作者 |
-| `last 5 years` | `2020/01/01:2025/01/01[PDat]` | 日期范围 |
+| `last 5 years` | `2021/01/01:2026/01/01[PDat]` | 日期范围 |
 | `review` | `Review[pt]` | 文章类型 |
+
+**关键变化：** 非MeSH词、非基因符号的普通关键词不再强制加 `[Title/Abstract]` 字段标签，而是作为原始关键词组传入，让 PubMed 的搜索引擎自然处理。这避免了专有名词查询返回 0 篇的问题。
 
 ### 6.2 手动构建检索式
 
@@ -327,7 +363,7 @@ python scripts/ncbi_search.py "(Alzheimer[Title/Abstract]) NOT (mouse[Title/Abst
 
 ## 7. 结果解析说明
 
-### 7.1 PubMed 结果字段
+### 7.1 PubMed 结果字段（EFetch — 现包含完整摘要）
 
 | 字段 | 说明 | 提取建议 |
 |------|------|---------|
@@ -337,9 +373,11 @@ python scripts/ncbi_search.py "(Alzheimer[Title/Abstract]) NOT (mouse[Title/Abst
 | `Journal` | 期刊名称 | 判断期刊影响力 |
 | `Year` | 出版年份 | 判断时效性 |
 | `DOI` | 数字对象标识符 | 用于查找全文 |
-| `Abstract` | 摘要（前 200 字符预览） | 快速了解研究内容 |
-| `MeSH` | MeSH 主题词 | 了解文章主题分类 |
+| `Abstract` | 摘要（前 1000 字符预览，或 `--full-abstract` 显示完整） | **现在默认包含！** 判断论文是否支持特定论点 |
+| `MeSH` | MeSH 主题词（最多 5 个） | 了解文章主题分类 |
 | `URL` | PubMed 链接 | 直接访问 |
+
+> **重要更新**: `ncbi_search.py` 的 PubMed 结果现在使用 EFetch API，默认包含摘要（1000 字符预览）。加 `--full-abstract` 可获取完整摘要。
 
 ### 7.2 Gene 结果字段
 
@@ -363,10 +401,12 @@ python scripts/ncbi_search.py "(Alzheimer[Title/Abstract]) NOT (mouse[Title/Abst
 
 ### 7.4 结果排序规则
 
-- **默认排序**: 按相关性（relevance）降序
-- **PubMed 特殊排序**: 相关性与时间综合排序
-- **无 API Key 限制**: 最多返回 20 条（NCBI 限制）
-- **有 API Key 限制**: 最多返回 100 条
+| 排序方式 | 说明 | 命令参数 |
+|---------|------|---------|
+| relevance | 相关性排序（默认） | `--sort relevance` |
+| pub_date | 按出版日期排序 | `--sort pub_date` |
+| Author | 按作者排序 | `--sort Author` |
+| Journal | 按期刊排序 | `--sort Journal` |
 
 ---
 
@@ -379,18 +419,23 @@ python scripts/ncbi_search.py "(Alzheimer[Title/Abstract]) NOT (mouse[Title/Abst
 | `HTTP 429` | 请求过于频繁 | 等待 1 秒后重试（自动处理） |
 | `HTTP 500` | NCBI 服务器错误 | 等待后重试（自动重试 3 次） |
 | `HTTP 502/503/504` | 网关超时 | 等待后重试（自动重试 3 次） |
-| `ConnectionError` | 网络连接失败 | 检查网络连接后重试 |
-| `Timeout` | 请求超时 | 增加超时时间或减少结果数 |
+| `ConnectionError` | 网络连接失败 | 脚本现在输出友好提示，检查网络连接 |
+| `Timeout` | 请求超时 | 脚本现在输出友好提示，减少结果数或重试 |
 | `0 results` | 无匹配结果 | 尝试更宽泛的查询词 |
+| `ModuleNotFoundError: requests` | requests 库未安装 | `pip install requests`（脚本自动提示） |
 
-### 8.2 速率限制
+### 8.2 Windows 编码问题（已修复）
+
+> **已修复**: 脚本现在在 Windows 环境下自动将 stdout/stderr 配置为 UTF-8 编码，不再因 `\xa0` 等字符崩溃。
+
+### 8.3 速率限制
 
 | 情况 | 限制 | 说明 |
 |------|------|------|
 | 无 API Key | 3 次/秒 | 脚本自动限流，无需手动处理 |
 | 有 API Key | 10 次/秒 | 建议配置 API Key 提高效率 |
 
-### 8.3 降级策略
+### 8.4 降级策略
 
 当 API Key 缺失或请求失败时：
 
@@ -406,14 +451,15 @@ python scripts/ncbi_search.py "Alzheimer APOE" --db pubmed --max 10
 echo $env:NCBI_API_KEY  # Windows PowerShell
 ```
 
-### 8.4 无结果时的应对策略
+### 8.5 无结果时的应对策略
 
 | 情况 | 建议操作 |
 |------|---------|
-| 查询太具体 | 使用更宽泛的术语 |
+| 查询太具体 | 使用更宽泛的术语，或直接用自然语言（不加字段标签） |
 | 拼写错误 | 检查拼写，尝试同义词 |
 | 数据库不对 | 尝试其他数据库 |
 | 过滤太严格 | 减少过滤条件（去掉 --years, --type 等） |
+| 自然语言转换问题 | 用 `ncbi_search.py` 直接传入查询（不做词拆解），或手动构建检索式 |
 
 ---
 
@@ -421,31 +467,33 @@ echo $env:NCBI_API_KEY  # Windows PowerShell
 
 ### 9.1 批量获取文献详情
 
-使用 `pubmed_fetch.py` 通过 PMID 列表批量获取：
+使用 `pubmed_fetch.py` 通过 PMID 列表批量获取（自动分批处理）：
 
 ```bash
 # 通过 PMID 列表获取
 python scripts/pubmed_fetch.py 33597265 34239348 35022842
 
-# 从文件读取 PMID 列表
+# 从文件读取 PMID 列表（自动分批，每批 200 个）
 python scripts/pubmed_fetch.py -f pmids.txt
 
 # 指定输出格式
 python scripts/pubmed_fetch.py 33597265 34239348 --format json
 
-# 保存到文件
-python scripts/pubmed_fetch.py 33597265 34239348 -o articles.json
+# 获取完整摘要
+python scripts/pubmed_fetch.py 33597265 -f pmids.txt --full-abstract -o full_results.txt
 ```
+
+> **重要更新**: `pubmed_fetch.py` 现在自动分批处理（每批 200 个 PMID），不再需要担心大量 PMID 导致请求失败。
 
 ### 9.2 多次查询结果合并
 
 ```bash
 # 分步查询不同数据库
 python scripts/ncbi_search.py "APOE" --db gene --format json -o gene_result.json
-python scripts/ncbi_search.py "APOE" --db pubmed --max 5 --format json -o pubmed_result.json
+python scripts/ncbi_search.py "APOE" --db pubmed --max 5 --full-abstract --format json -o pubmed_result.json
 
 # 使用 pubmed_search.py 获取详细信息
-python scripts/pubmed_search.py "APOE gene Alzheimer" --max 10 -o detailed_results.txt
+python scripts/pubmed_search.py "APOE gene Alzheimer" --max 10 --full-abstract -o detailed_results.txt
 ```
 
 ### 9.3 数据导出格式
@@ -467,6 +515,7 @@ python scripts/pubmed_search.py "APOE gene Alzheimer" --max 10 -o detailed_resul
 1. **自动缓存机制**: ESearch、ESummary 和 EFetch 的所有 HTTP 响应都会被自动持久化存储在工作区下的 `.ncbi_cache/cache.db`。
 2. **零网络延迟**: 重复进行相同的查询时，数据会瞬间从本地数据库返回（耗时由数百毫秒缩短至数毫秒），完全无网络请求。
 3. **缓存有效期**: 缓存默认有效期为 **24 小时**。可以通过 `NCBI_CACHE_EXPIRE_HOURS` 环境变量调整过期时长。
+4. **API Key 不影响缓存**: 缓存键不包含 API Key，同一查询的结果在不同 API Key 之间共享。
 
 ### 10.2 缓存控制与配置
 
@@ -527,23 +576,41 @@ python scripts/ncbi_search.py "query" --api-key "your-api-key"
 ncbi-search/
 ├── SKILL.md                    # 本文档（AI Agent 技能说明）
 ├── README.md                   # 用户文档
-├── LICENSE                     # MIT License
 ├── scripts/
-│   ├── ncbi_search.py          # 主脚本：多数据库智能搜索
-│   ├── pubmed_search.py        # PubMed 专用：自然语言转检索式
-│   ├── pubmed_fetch.py         # 批量获取：通过 PMID 获取文献详情
-│   └── ncbi_utils.py           # 工具函数
+│   ├── ncbi_search.py          # 主脚本：多数据库智能搜索（PubMed 用 EFetch）
+│   ├── pubmed_search.py        # PubMed 专用：自然语言转检索式（宽松策略 + ElementTree）
+│   ├── pubmed_fetch.py         # 批量获取：分批处理 + 完整摘要
+│   ├── ncbi_utils.py           # 工具函数（缓存 + 编码修复 + ElementTree 辅助）
+│   └── test_ncbi.py            # 单元测试
 └── references/
     └── query_syntax.md         # PubMed 检索语法指南
 ```
 
 ---
 
-## 参考链接
+## 13. 更新日志
 
-- [NCBI E-Utilities 官方文档](https://www.ncbi.nlm.nih.gov/books/NBK25501/)
-- [NCBI 数据库列表](https://www.ncbi.nlm.nih.gov/books/NBK25500/table/chapter.T5/)
-- [PubMed 检索语法](https://pubmed.ncbi.nlm.nih.gov/help/)
+### v2 (2026-07-08)
+
+**P0 修复（致命问题）:**
+- ✅ **Windows GBK 编码崩溃**: 自动将 stdout/stderr 配置为 UTF-8，不再因 `\xa0` 等字符崩溃
+- ✅ **PubMed 结果无摘要**: `ncbi_search.py` 对 PubMed 改用 EFetch API，默认返回摘要
+
+**P1 修复（重要问题）:**
+- ✅ **摘要截断太短**: 从 200 字符提高到 1000 字符，新增 `--full-abstract` 参数显示完整摘要
+- ✅ **自然语言转换过于激进**: 非MeSH词/基因符号不再强制加 `[Title/Abstract]`，改为原始关键词组传入 PubMed
+
+**P2 修复（代码质量问题）:**
+- ✅ **XML 正则解析脆弱**: `parse_pubmed_xml` 改用 `xml.etree.ElementTree`，支持结构化摘要、机构作者、内联标签
+- ✅ **detect_database 死代码**: 删除重复的数据库关键词评分代码块
+- ✅ **多词 MeSH 匹配失效**: 新增贪婪短语匹配（最长优先），`"alzheimer disease"` 等多词 key 现在可命中
+- ✅ **网络错误无处理**: 所有脚本 `main()` 加 try-except，输出友好中文错误提示
+
+**P3 修复（功能增强）:**
+- ✅ **缺少 --sort 选项**: `ncbi_search.py` 和 `pubmed_search.py` 新增 `--sort` 参数
+- ✅ **批量 PMID 无分批**: `pubmed_fetch.py` 自动分批（每批 200 个 PMID）
+- ✅ **缓存未区分 API Key**: 缓存键排除 `api_key` 参数，不同 Key 的查询结果共享缓存
+- ✅ **requests 库缺失提示**: 导入失败时输出 `pip install requests` 安装指引
 
 ---
 

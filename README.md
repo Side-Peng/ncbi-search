@@ -4,9 +4,7 @@
 
 [![NCBI](https://img.shields.io/badge/NCBI-E--Utilities-blue)](https://www.ncbi.nlm.nih.gov/books/NBK25501/)
 [![Python](https://img.shields.io/badge/Python-3.7+-green)](https://www.python.org/)
-[![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 [![Free](https://img.shields.io/badge/API-Free-success)](https://www.ncbi.nlm.nih.gov/account/)
-[![Release](https://img.shields.io/github/v/release/Side-Peng/ncbi-search)](https://github.com/Side-Peng/ncbi-search/releases)
 
 **智能多数据库检索工具 | 直接调用NCBI官方API | 无需第三方服务**
 
@@ -22,12 +20,16 @@
 
 - 🎯 **智能意图识别** - 自动判断搜索目标数据库（文献/基因/变异等），支持通用基因正则匹配
 - 📚 **多数据库支持** - PubMed, Gene, Protein, dbSNP, ClinVar 等 10+ 数据库
-- 🔄 **自然语言转换** - 自动将自然语言转换为标准检索式
-- ⚡ **零外部依赖** - 直接调用 NCBI 官方 E-Utilities API
-- 💾 **SQLite 本地缓存** - 自动缓存查询结果，二次查询毫秒级响应，避免触发 API 限速
+- 🔄 **自然语言转换** - 宽松策略：MeSH词和基因符号加字段标签，普通关键词原样传入 PubMed
+- 📄 **完整摘要输出** - PubMed 结果默认包含 1000 字符摘要预览，`--full-abstract` 获取全文
+- 🏗️ **ElementTree 解析** - 结构化 XML 解析替代脆弱正则，支持结构化摘要和机构作者
+- ⚡ **零外部依赖** - 仅需 `requests`，直接调用 NCBI 官方 E-Utilities API
+- 💾 **SQLite 本地缓存** - 自动缓存查询结果，二次查询毫秒级响应
 - 💰 **完全免费** - 使用自己的 NCBI API Key，无任何费用
 - 🚀 **速率优化** - 自动重试、智能限流、支持高并发
-- 🧪 **单元测试覆盖** - 内置自动化测试套件，保障路由与缓存逻辑的正确性
+- 🛡️ **Windows 编码安全** - 自动处理 GBK/UTF-8 编码，不再因特殊字符崩溃
+- 🔀 **排序与分批** - `--sort` 按相关性/日期排序，批量 PMID 自动分批处理
+- 🧪 **单元测试覆盖** - 内置自动化测试套件
 
 ### 📦 安装
 
@@ -36,9 +38,11 @@
 git clone https://github.com/Side-Peng/ncbi-search.git
 cd ncbi-search
 
-# 安装依赖
+# 安装依赖（仅需 requests）
 pip install requests
 ```
+
+> 如果未安装 `requests`，脚本会自动输出安装提示。
 
 ### 🔑 配置 API Key
 
@@ -62,19 +66,19 @@ python scripts/ncbi_search.py "query" --api-key "your-api-key"
 ### 🚀 快速开始
 
 ```bash
-# 自动识别搜索意图
+# 自动识别搜索意图（PubMed 现在返回完整摘要！）
 python scripts/ncbi_search.py "APOE gene"                    # → Gene 数据库
-python scripts/ncbi_search.py "Alzheimer disease review"     # → PubMed
+python scripts/ncbi_search.py "Alzheimer disease review"     # → PubMed (含摘要)
 python scripts/ncbi_search.py "rs429358"                     # → dbSNP
-python scripts/ncbi_search.py "VCV000242862"                 # → ClinVar（v1.1 新增）
-python scripts/ncbi_search.py "SHANK3 function"              # → Gene（通用基因正则匹配）
+python scripts/ncbi_search.py "VCV000242862"                 # → ClinVar
 
 # 指定数据库
 python scripts/ncbi_search.py "APOE" --db gene --organism human
 python scripts/ncbi_search.py "insulin" --db protein
 
 # PubMed 高级过滤
-python scripts/ncbi_search.py "diabetes treatment" --years 5 --type review --max 20
+python scripts/ncbi_search.py "diabetes treatment" --years 5 --type review --max 20 --full-abstract
+python scripts/ncbi_search.py "Alzheimer amyloid beta" --sort pub_date --max 10
 ```
 
 ### 📖 使用示例
@@ -82,14 +86,20 @@ python scripts/ncbi_search.py "diabetes treatment" --years 5 --type review --max
 #### PubMed 文献检索
 
 ```bash
-# 近5年阿尔茨海默病Aβ研究
-python scripts/ncbi_search.py "Alzheimer amyloid beta" --years 5 --max 10
+# 近5年阿尔茨海默病综述（含完整摘要）
+python scripts/ncbi_search.py "Alzheimer disease" --years 5 --type review --full-abstract
+
+# 按出版日期排序
+python scripts/ncbi_search.py "COVID-19 vaccine" --sort pub_date --max 20
 
 # 指定作者和期刊
 python scripts/ncbi_search.py "Smith J[Author] AND Nature[Journal]"
 
 # 临床试验
 python scripts/ncbi_search.py "diabetes" --type clinical_trial
+
+# 自然语言查询（宽松策略，不再强制每个词加字段标签）
+python scripts/pubmed_search.py "p-tau217 Abeta42 blood plasma Alzheimer biomarker"
 ```
 
 输出示例：
@@ -97,7 +107,7 @@ python scripts/ncbi_search.py "diabetes" --type clinical_trial
 ======================================================================
 PubMed Search Results
 ======================================================================
-Query: (Alzheimer amyloid beta) AND 2021/03/12:2026/03/11[PDat]
+Query: "Alzheimer Disease"[MeSH] AND Review[pt] AND 2021/07/08:2026/07/08[PDat]
 Total: 21355 articles | Returned: 10 articles
 ======================================================================
 
@@ -105,21 +115,28 @@ Total: 21355 articles | Returned: 10 articles
 Title: Interaction between Aβ and Tau in the Pathogenesis...
 Authors: Zhang H, Wei W, Zhao M et al.
 Journal: International journal of biological sciences (2021)
+DOI: 10.7150/ijbs.58296
+Abstract: Alzheimer's disease (AD) is a neurodegenerative disorder
+characterized by progressive memory loss and cognitive decline.
+The pathogenesis of AD involves complex interactions between
+amyloid-beta (Aβ) plaques and tau neurofibrillary tangles...
+MeSH: Alzheimer Disease; Amyloid beta-Peptides; Tau Proteins
 URL: https://pubmed.ncbi.nlm.nih.gov/34239348/
 ----------------------------------------------------------------------
 ```
 
+> **v2 更新**：PubMed 结果现在默认包含摘要（1000 字符预览），加 `--full-abstract` 显示完整摘要。
+
 #### Gene 基因检索
 
 ```bash
-# 搜索基因
 python scripts/ncbi_search.py "APOE gene" --organism human
 
 # 输出
 ======================================================================
 Gene Search Results
 ======================================================================
-Query: (APOE gene) AND human[Organism]
+Query: APOE AND human[Organism]
 Total: 1 gene
 ======================================================================
 
@@ -134,7 +151,6 @@ URL: https://www.ncbi.nlm.nih.gov/gene/348
 #### dbSNP 变异检索
 
 ```bash
-# 搜索 SNP
 python scripts/ncbi_search.py "rs429358"
 
 # 输出
@@ -151,7 +167,20 @@ URL: https://www.ncbi.nlm.nih.gov/snp/rs429358
 ----------------------------------------------------------------------
 ```
 
-### 💾 本地缓存机制（v1.1 新增）
+#### 批量获取文献详情
+
+```bash
+# 通过 PMID 列表获取（自动分批，每批 200 个）
+python scripts/pubmed_fetch.py 33597265 34239348 35022842 --full-abstract
+
+# 从文件读取大量 PMID（自动分批处理）
+python scripts/pubmed_fetch.py -f pmids.txt --format summary --full-abstract -o results.txt
+
+# 指定分批大小
+python scripts/pubmed_fetch.py -f pmids.txt --batch-size 100
+```
+
+### 💾 本地缓存机制
 
 工具内置了零外部依赖的 SQLite 本地自动缓存，所有 NCBI API 响应结果会自动持久化存储在 `.ncbi_cache/cache.db` 中。
 
@@ -160,11 +189,12 @@ URL: https://www.ncbi.nlm.nih.gov/snp/rs429358
 | **自动缓存** | ESearch、ESummary、EFetch 响应全部自动存储 |
 | **缓存有效期** | 默认 24 小时，支持自定义 |
 | **二次查询** | 命中缓存时 1-5ms 响应，零网络请求 |
+| **API Key 共享** | 缓存键不包含 API Key，同一查询在不同 Key 间共享 |
 | **禁用方式** | 设置 `NCBI_NO_CACHE=1` 环境变量 |
 
 ```bash
 # 调整缓存有效期（例如 48 小时）
-$env:NCBI_CACHE_EXPIRE_HOURS = "48"
+$env:NCBI_CACHE_EXPIRE_HOURS = "48"    # Windows PowerShell
 
 # 临时禁用缓存
 $env:NCBI_NO_CACHE = "1"
@@ -205,6 +235,8 @@ python scripts/ncbi_search.py "APOE gene" -v
 
 ### 📝 命令行参数
 
+#### ncbi_search.py（主脚本）
+
 ```
 python scripts/ncbi_search.py <query> [options]
 
@@ -216,6 +248,8 @@ python scripts/ncbi_search.py <query> [options]
   --max N               最大返回结果数（默认: 10）
   --years N             限制最近 N 年（仅 PubMed）
   --type TYPE           文章类型: review, clinical_trial 等（仅 PubMed）
+  --sort SORT           排序方式: relevance, pub_date, Author, Journal（默认: relevance）
+  --full-abstract       显示完整摘要（不截断，仅 PubMed）
   --organism ORGANISM   限制物种（仅 Gene）
   --format FORMAT       输出格式: summary, json（默认: summary）
   --output FILE         保存到文件
@@ -223,20 +257,72 @@ python scripts/ncbi_search.py <query> [options]
   --verbose             显示详细信息（含缓存命中状态）
 ```
 
+#### pubmed_search.py（PubMed 专用）
+
+```
+python scripts/pubmed_search.py <query> [options]
+
+必需参数:
+  query                 自然语言检索词或 PubMed 检索式
+
+可选参数:
+  --max N               最大返回结果数（默认: 10）
+  --years N             限制最近 N 年
+  --type TYPE           文章类型: review, clinical_trial, randomized, meta_analysis
+  --mesh MESH           MeSH 主题词筛选
+  --sort SORT           排序方式: relevance, pub_date, Author, Journal（默认: relevance）
+  --full-abstract       显示完整摘要（不截断）
+  --format FORMAT       输出格式: summary, json（默认: summary）
+  --output FILE         保存到文件
+  --api-key KEY         NCBI API Key
+  --verbose             显示详细信息
+```
+
+#### pubmed_fetch.py（批量获取）
+
+```
+python scripts/pubmed_fetch.py <pmids...> [options]
+
+必需参数:
+  pmids                 PMID 列表（空格分隔）
+
+可选参数:
+  --file / -f FILE      从文件读取 PMID 列表
+  --format FORMAT       输出格式: summary, json（默认: json）
+  --full-abstract       显示完整摘要（不截断）
+  --batch-size N        每批获取的最大 PMID 数（默认: 200）
+  --output FILE         保存到文件
+  --api-key KEY         NCBI API Key
+  --verbose             显示详细信息
+```
+
+### 🔄 自然语言转换策略（v2）
+
+`pubmed_search.py` 的自然语言转换采用**宽松策略**：
+
+| 元素类型 | 转换方式 | 示例 |
+|---------|---------|------|
+| **MeSH 词**（含多词短语） | 加 `[MeSH]` 后缀 | `"Alzheimer Disease"[MeSH]` |
+| **基因符号** | 加 `[Title/Abstract]` | `APOE[Title/Abstract]` |
+| **作者** | 加 `[Author]` | `Smith J[Author]` |
+| **普通关键词** | 原样传入（不加字段标签） | `(p-tau217 Abeta42 biomarker)` |
+| **文章类型** | 加 `[pt]` | `Review[pt]` |
+
+> 与 v1 的区别：v1 把所有词都加 `[Title/Abstract]` AND 连接，导致专有名词查询返回 0 篇。v2 只对 MeSH 和基因加字段标签，普通关键词让 PubMed 自然处理。
+
 ### 📁 项目结构
 
 ```
 ncbi-search/
 ├── README.md                   # 本文档
 ├── SKILL.md                    # AI Agent 技能说明文档
-├── LICENSE                     # MIT License
 ├── .ncbi_cache/                # 本地 SQLite 缓存目录（自动生成）
 │   └── cache.db                # 缓存数据库
 ├── scripts/
-│   ├── ncbi_search.py          # 主脚本（多数据库智能搜索）
-│   ├── pubmed_search.py        # PubMed 专用脚本（自然语言转检索式）
-│   ├── pubmed_fetch.py         # PMID 批量获取
-│   ├── ncbi_utils.py           # 共享工具函数（Session、限流、缓存）
+│   ├── ncbi_search.py          # 主脚本（多数据库智能搜索，PubMed 用 EFetch）
+│   ├── pubmed_search.py        # PubMed 专用（自然语言转检索式 + ElementTree）
+│   ├── pubmed_fetch.py         # PMID 批量获取（分批处理 + 完整摘要）
+│   ├── ncbi_utils.py           # 共享工具函数（缓存 + 编码修复 + ElementTree 辅助）
 │   └── test_ncbi.py            # 单元测试套件
 └── references/
     └── query_syntax.md         # PubMed 检索语法指南
@@ -252,14 +338,31 @@ python scripts/test_ncbi.py
 
 ### 🔧 作为 Agent Skill 使用
 
-本项目设计为 AI Agent（如 Claude、Gemini 等）的技能插件：
+本项目设计为 AI Agent（如 Claude、Gemini 等）的技能插件。在 SKILL.md 中定义了详细的触发规则和使用说明。
 
-```bash
-# 安装到 Agent skills 目录
-cp -r ncbi-search ~/.agents/skills/
-```
+### 📋 更新日志
 
-在 SKILL.md 中定义了详细的触发规则和使用说明。
+#### v2 (2026-07-08)
+
+**致命问题修复：**
+- ✅ Windows GBK 编码崩溃 — 自动配置 stdout/stderr 为 UTF-8
+- ✅ PubMed 结果无摘要 — 改用 EFetch API，默认返回摘要
+
+**重要问题修复：**
+- ✅ 摘要截断太短 — 200→1000 字符，新增 `--full-abstract`
+- ✅ 自然语言转换过于激进 — 宽松策略，普通关键词不加字段标签
+
+**代码质量改进：**
+- ✅ XML 正则解析 → ElementTree（支持结构化摘要、机构作者）
+- ✅ detect_database 死代码删除
+- ✅ 多词 MeSH 匹配修复（贪婪短语匹配）
+- ✅ 网络错误 try-except（友好中文提示）
+
+**功能增强：**
+- ✅ `--sort` 排序选项（relevance/pub_date/Author/Journal）
+- ✅ 批量 PMID 分批处理（每批 200 个）
+- ✅ 缓存键排除 API Key（跨 Key 共享）
+- ✅ requests 缺失自动提示安装
 
 ### 🤝 贡献
 
@@ -270,10 +373,6 @@ cp -r ncbi-search ~/.agents/skills/
 3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
 4. 推送到分支 (`git push origin feature/AmazingFeature`)
 5. 创建 Pull Request
-
-### 📄 许可证
-
-本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
 
 ### 🙏 致谢
 
@@ -287,11 +386,15 @@ cp -r ncbi-search ~/.agents/skills/
 
 - 🎯 **Smart Intent Detection** - Automatically routes queries to appropriate databases, with universal gene symbol regex matching
 - 📚 **Multi-Database Support** - PubMed, Gene, Protein, dbSNP, ClinVar, and 10+ more
-- 🔄 **Natural Language Processing** - Converts plain language to structured queries
-- ⚡ **No External Dependencies** - Direct NCBI E-Utilities API calls
+- 🔄 **Relaxed NL Strategy** - MeSH terms and gene symbols get field tags; plain keywords pass through to PubMed naturally
+- 📄 **Full Abstract Output** - PubMed results include 1000-char abstract preview by default; `--full-abstract` for complete text
+- 🏗️ **ElementTree Parsing** - Structured XML parsing replaces fragile regex, supporting structured abstracts and collective authors
+- ⚡ **Minimal Dependencies** - Only `requests` needed; direct NCBI E-Utilities API calls
 - 💾 **SQLite Local Cache** - Automatic query caching with millisecond-level repeat lookups
 - 💰 **Completely Free** - Uses your own NCBI API key
 - 🚀 **Rate Optimized** - Auto-retry, smart throttling, high concurrency support
+- 🛡️ **Windows Encoding Safe** - Auto UTF-8 stdout/stderr configuration; no crashes from special characters
+- 🔀 **Sort & Batch** - `--sort` by relevance/date; batch PMID fetch (200 per batch)
 - 🧪 **Unit Tested** - Built-in test suite for routing and caching logic
 
 ### 📦 Installation
@@ -301,6 +404,8 @@ git clone https://github.com/Side-Peng/ncbi-search.git
 cd ncbi-search
 pip install requests
 ```
+
+> The script will prompt you to install `requests` if it's missing.
 
 ### 🔑 API Key Setup
 
@@ -312,37 +417,141 @@ pip install requests
 # Linux/macOS
 export NCBI_API_KEY="your-api-key"
 
-# Windows PowerShell
+# Windows PowerShell (permanent)
 [Environment]::SetEnvironmentVariable("NCBI_API_KEY", "your-api-key", "User")
+
+# Or specify on command line
+python scripts/ncbi_search.py "query" --api-key "your-api-key"
 ```
+
+**Rate limits**: 3 req/s without API key, 10 req/s with API key
 
 ### 🚀 Quick Start
 
 ```bash
-# Auto-detect database
+# Auto-detect database (PubMed now includes abstracts!)
 python scripts/ncbi_search.py "APOE gene"                # → Gene database
-python scripts/ncbi_search.py "Alzheimer disease review" # → PubMed
+python scripts/ncbi_search.py "Alzheimer disease review" # → PubMed (with abstract)
 python scripts/ncbi_search.py "rs429358"                 # → dbSNP
-python scripts/ncbi_search.py "VCV000242862"             # → ClinVar (v1.1)
+python scripts/ncbi_search.py "VCV000242862"             # → ClinVar
 
 # Specify database
 python scripts/ncbi_search.py "APOE" --db gene --organism human
 
-# PubMed filters
-python scripts/ncbi_search.py "diabetes" --years 5 --type review --max 20
+# PubMed filters with full abstracts
+python scripts/ncbi_search.py "diabetes" --years 5 --type review --max 20 --full-abstract
+
+# Sort by publication date
+python scripts/ncbi_search.py "COVID-19 vaccine" --sort pub_date --max 20
+
+# Natural language query (relaxed strategy)
+python scripts/pubmed_search.py "p-tau217 Abeta42 blood plasma Alzheimer biomarker"
 ```
 
-### 💾 Local Cache (v1.1)
+### 📖 Usage Examples
 
-All NCBI API responses are automatically cached in a local SQLite database (`.ncbi_cache/cache.db`). Repeat queries return instantly (1-5ms) with zero network requests. Cache expires after 24 hours by default.
+#### PubMed Literature Search
+
+```bash
+# Recent Alzheimer reviews with full abstracts
+python scripts/ncbi_search.py "Alzheimer disease" --years 5 --type review --full-abstract
+
+# Sort by publication date
+python scripts/ncbi_search.py "COVID-19 vaccine" --sort pub_date --max 20
+
+# Complex Boolean query
+python scripts/ncbi_search.py "(Alzheimer[Title/Abstract]) AND (APOE[Title/Abstract]) AND (Review[pt])"
+
+# Clinical trials
+python scripts/ncbi_search.py "diabetes" --type clinical_trial
+```
+
+Output example:
+```
+======================================================================
+PubMed Search Results
+======================================================================
+Query: "Alzheimer Disease"[MeSH] AND Review[pt] AND 2021/07/08:2026/07/08[PDat]
+Total: 21355 articles | Returned: 10 articles
+======================================================================
+
+[1] PMID: 34239348
+Title: Interaction between Aβ and Tau in the Pathogenesis...
+Authors: Zhang H, Wei W, Zhao M et al.
+Journal: International journal of biological sciences (2021)
+DOI: 10.7150/ijbs.58296
+Abstract: Alzheimer's disease (AD) is a neurodegenerative disorder
+characterized by progressive memory loss and cognitive decline...
+MeSH: Alzheimer Disease; Amyloid beta-Peptides; Tau Proteins
+URL: https://pubmed.ncbi.nlm.nih.gov/34239348/
+----------------------------------------------------------------------
+```
+
+> **v2 update**: PubMed results now include abstracts by default (1000-char preview). Use `--full-abstract` for complete text.
+
+#### Batch Fetching
+
+```bash
+# Fetch by PMID list (auto-batched, 200 per batch)
+python scripts/pubmed_fetch.py 33597265 34239348 35022842 --full-abstract
+
+# From file (auto-batched)
+python scripts/pubmed_fetch.py -f pmids.txt --format summary --full-abstract -o results.txt
+
+# Custom batch size
+python scripts/pubmed_fetch.py -f pmids.txt --batch-size 100
+```
+
+### 💾 Local Cache
+
+All NCBI API responses are automatically cached in a local SQLite database (`.ncbi_cache/cache.db`). Repeat queries return instantly (1-5ms) with zero network requests. Cache expires after 24 hours by default. Cache keys exclude API keys, so the same query shares results across different keys.
 
 ```bash
 # Customize cache TTL (hours)
-export NCBI_CACHE_EXPIRE_HOURS=48
+export NCBI_CACHE_EXPIRE_HOURS=48    # Linux/macOS
+$env:NCBI_CACHE_EXPIRE_HOURS = "48"  # Windows PowerShell
 
 # Disable cache
 export NCBI_NO_CACHE=1
 ```
+
+### 🔄 Natural Language Strategy (v2)
+
+`pubmed_search.py` uses a **relaxed strategy**:
+
+| Element | Conversion | Example |
+|---------|-----------|---------|
+| **MeSH terms** (including multi-word) | Add `[MeSH]` suffix | `"Alzheimer Disease"[MeSH]` |
+| **Gene symbols** | Add `[Title/Abstract]` | `APOE[Title/Abstract]` |
+| **Authors** | Add `[Author]` | `Smith J[Author]` |
+| **Plain keywords** | Pass through as-is (no field tag) | `(p-tau217 Abeta42 biomarker)` |
+| **Article types** | Add `[pt]` | `Review[pt]` |
+
+> v1 added `[Title/Abstract]` to every word AND-connected, causing zero results for specialized term queries. v2 only tags MeSH/gene terms; plain keywords are handled by PubMed's native search engine.
+
+### 📋 Changelog
+
+#### v2 (2026-07-08)
+
+**Critical fixes:**
+- ✅ Windows GBK encoding crash — auto UTF-8 stdout/stderr configuration
+- ✅ PubMed results missing abstracts — switched to EFetch API
+
+**Important fixes:**
+- ✅ Abstract truncation too short — 200→1000 chars, added `--full-abstract`
+- ✅ Overly aggressive NL conversion — relaxed strategy, plain keywords pass through
+
+**Quality improvements:**
+- ✅ Fragile regex XML parsing → ElementTree (structured abstracts, collective authors)
+- ✅ Removed duplicate `detect_database` dead code
+- ✅ Multi-word MeSH matching (greedy phrase matching)
+- ✅ Network error try-except (friendly error messages)
+
+**Feature enhancements:**
+- ✅ `--sort` option (relevance/pub_date/Author/Journal)
+- ✅ Batch PMID processing (200 per batch)
+- ✅ Cache key excludes API key (cross-key sharing)
+- ✅ Auto-install prompt for missing `requests`
 
 ### 🧪 Run Tests
 
@@ -350,9 +559,17 @@ export NCBI_NO_CACHE=1
 python scripts/test_ncbi.py
 ```
 
-### 📄 License
+### 🤝 Contributing
 
-MIT License - see [LICENSE](LICENSE)
+1. Fork the repo
+2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to branch (`git push origin feature/AmazingFeature`)
+5. Create a Pull Request
+
+### 🙏 Acknowledgments
+
+- [NCBI E-Utilities](https://www.ncbi.nlm.nih.gov/books/NBK25501/) - Official API
 
 ---
 
