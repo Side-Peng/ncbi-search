@@ -3,6 +3,7 @@ __pycache__/
 *.pyo
 .ncbi_cache/
 .workbuddy/
+.qoder/
 .env
 .venv/
 venv/

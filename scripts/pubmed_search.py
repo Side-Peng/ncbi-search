@@ -33,10 +33,19 @@ except ImportError:
     print("Error: Could not import ncbi_utils.py from the scripts directory.", file=sys.stderr)
     sys.exit(1)
 
+try:
+    import requests
+except ImportError:
+    print("Error: 'requests' library is required. Install with: pip install requests", file=sys.stderr)
+    sys.exit(1)
+
 # NCBI E-Utilities Base URLs
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 ESEARCH_URL = f"{EUTILS_BASE}/esearch.fcgi"
 EFETCH_URL = f"{EUTILS_BASE}/efetch.fcgi"
+
+# Maximum IDs per EFetch request (NCBI recommended limit)
+BATCH_SIZE = 200
 
 # Known MeSH terms for common medical concepts
 # P2 fix: includes multi-word phrases (will be matched via phrase matching)
@@ -389,22 +398,39 @@ def fetch_articles(
     api_key: Optional[str] = None,
     verbose: bool = False
 ) -> List[Dict[str, Any]]:
-    """Fetch article details by PMID using EFetch (returns full abstracts)."""
+    """Fetch article details by PMID using EFetch (returns full abstracts).
+    P2 fix: Batch requests (max 200 IDs per EFetch) to avoid silent truncation.
+    """
     if not pmids:
         return []
-        
-    params = {
-        "db": "pubmed",
-        "id": ",".join(pmids),
-        "rettype": "xml",
-        "retmode": "xml"
-    }
     
-    if api_key:
-        params["api_key"] = api_key
+    all_articles = []
+    total_batches = (len(pmids) + BATCH_SIZE - 1) // BATCH_SIZE
+    
+    for i in range(total_batches):
+        batch = pmids[i * BATCH_SIZE : (i + 1) * BATCH_SIZE]
+        if verbose or total_batches > 1:
+            print(f"Fetching batch {i + 1}/{total_batches} ({len(batch)} PMIDs)...", file=sys.stderr)
         
-    response_text = http_get(EFETCH_URL, params=params, api_key=api_key, timeout=60, verbose=verbose)
-    return parse_pubmed_xml(response_text)
+        params = {
+            "db": "pubmed",
+            "id": ",".join(batch),
+            "rettype": "xml",
+            "retmode": "xml"
+        }
+        
+        if api_key:
+            params["api_key"] = api_key
+            
+        response_text = http_get(EFETCH_URL, params=params, api_key=api_key, timeout=60, verbose=verbose)
+        all_articles.extend(parse_pubmed_xml(response_text))
+        
+        # Small delay between batches to respect rate limits
+        if i < total_batches - 1:
+            import time
+            time.sleep(0.5)
+    
+    return all_articles
 
 
 def parse_pubmed_xml(xml_text: str) -> List[Dict[str, Any]]:

@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ncbi_utils import get_cached_response, set_cache_response, get_cache_key, rate_limit
 import ncbi_utils
 from ncbi_search import detect_database
+from pmc_fetch import normalize_pmcid, parse_pmc_xml
 
 
 class TestNCBISearchSkill(unittest.TestCase):
@@ -126,6 +127,82 @@ class TestNCBISearchSkill(unittest.TestCase):
         
         # The total time for 3 calls with 2 intervals of 0.1s should be at least 0.2s
         self.assertGreaterEqual(duration, 0.18)
+
+    def test_pmc_id_normalization(self):
+        """Test normalize_pmcid strips the PMC prefix and validates numeric ids."""
+        self.assertEqual(normalize_pmcid("PMC8241728"), "8241728")
+        self.assertEqual(normalize_pmcid("pmc8241728"), "8241728")
+        self.assertEqual(normalize_pmcid("8241728"), "8241728")
+        self.assertEqual(normalize_pmcid("  PMC123  "), "123")
+        with self.assertRaises(ValueError):
+            normalize_pmcid("not-an-id")
+        with self.assertRaises(ValueError):
+            normalize_pmcid("")
+
+    def test_parse_pmc_fulltext_xml(self):
+        """Test parse_pmc_xml extracts metadata and full body text from JATS XML."""
+        xml = """<?xml version="1.0"?><pmc-articleset><article>
+          <front><journal-meta><journal-title-group><journal-title>Test Journal</journal-title></journal-title-group></journal-meta>
+            <article-meta>
+              <article-id pub-id-type="pmcid">PMC999999</article-id>
+              <article-id pub-id-type="pmid">12345678</article-id>
+              <article-id pub-id-type="doi">10.1000/test.001</article-id>
+              <title-group><article-title>A Study of <i>Something</i> Important</article-title></title-group>
+              <contrib-group>
+                <contrib contrib-type="author"><name><surname>Zhang</surname><given-names>Huiqin</given-names></name></contrib>
+                <contrib contrib-type="author"><name><surname>Wei</surname><given-names>Wei</given-names></name></contrib>
+              </contrib-group>
+              <pub-date><year>2021</year></pub-date>
+              <abstract><p>This is the abstract text.</p></abstract>
+            </article-meta></front>
+          <body>
+            <sec><title>Introduction</title><p>First intro paragraph.</p>
+              <sec><title>Background</title><p>Nested background paragraph.</p></sec>
+            </sec>
+            <sec><title>Conclusion</title><p>Final conclusion paragraph.</p></sec>
+          </body></article></pmc-articleset>"""
+        articles = parse_pmc_xml(xml)
+        self.assertEqual(len(articles), 1)
+        art = articles[0]
+        self.assertEqual(art["pmcid"], "999999")
+        self.assertEqual(art["pmid"], "12345678")
+        self.assertEqual(art["doi"], "10.1000/test.001")
+        self.assertEqual(art["title"], "A Study of Something Important")
+        self.assertEqual(art["authors"], ["Zhang H", "Wei W"])
+        self.assertEqual(art["year"], "2021")
+        self.assertEqual(art["abstract"], "This is the abstract text.")
+        self.assertTrue(art["open_access"])
+        # Full text should contain all paragraphs, in order
+        self.assertIn("First intro paragraph.", art["full_text"])
+        self.assertIn("Nested background paragraph.", art["full_text"])
+        self.assertIn("Final conclusion paragraph.", art["full_text"])
+        # Headings should be captured as heading blocks
+        headings = [b["text"] for b in art["content"] if b["type"] == "heading"]
+        self.assertIn("Introduction", headings)
+        self.assertIn("Background", headings)
+        self.assertIn("Conclusion", headings)
+        # Nested section heading should have a deeper level than its parent
+        levels = {b["text"]: b["level"] for b in art["content"] if b["type"] == "heading"}
+        self.assertEqual(levels["Introduction"], 1)
+        self.assertEqual(levels["Background"], 2)
+
+    def test_parse_pmc_no_body_is_metadata_only(self):
+        """Test parse_pmc_xml flags open_access=False when the body is absent."""
+        xml = """<?xml version="1.0"?><pmc-articleset><article>
+          <!--The publisher of this article does not allow downloading of the full text in XML form.-->
+          <front><article-meta>
+            <article-id pub-id-type="pmcid">PMC555555</article-id>
+            <title-group><article-title>Paywalled Paper</article-title></title-group>
+            <abstract><p>Only the abstract is available here.</p></abstract>
+          </article-meta></front></article></pmc-articleset>"""
+        articles = parse_pmc_xml(xml)
+        self.assertEqual(len(articles), 1)
+        art = articles[0]
+        self.assertEqual(art["pmcid"], "555555")
+        self.assertFalse(art["open_access"])
+        self.assertEqual(art["full_text"], "")
+        self.assertEqual(art["char_count"], 0)
+        self.assertEqual(art["abstract"], "Only the abstract is available here.")
 
 
 if __name__ == "__main__":

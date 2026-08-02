@@ -1,8 +1,8 @@
 ---
 name: ncbi-search
-description: "Search NCBI databases using E-Utilities API (official, free). Supports 10+ databases: PubMed (literature), Gene, Protein, Nucleotide, dbSNP, ClinVar, Taxonomy, BioSample, Assembly, SRA. Automatically detects search intent and routes to appropriate database. Returns formatted results with tiered abstract display (none/preview/full) for token-efficient progressive search. Use for biomedical literature, gene information, protein sequences, genetic variants, and more."
+description: "Search NCBI databases using E-Utilities API (official, free). Supports 10+ databases: PubMed (literature), Gene, Protein, Nucleotide, dbSNP, ClinVar, Taxonomy, BioSample, Assembly, SRA. Automatically detects search intent and routes to appropriate database. Returns formatted results with tiered abstract display (none/preview/full) for token-efficient progressive search. Can also fetch PubMed Central (PMC) Open Access full text via EFetch. Use for biomedical literature, full-text articles, gene information, protein sequences, genetic variants, and more."
 allowed-tools: [Bash]
-trigger-keywords: [ncbi, pubmed, gene, protein, snp, clinvar, literature, paper, article, review, variant, genome, sequence, taxonomy, dna, rna]
+trigger-keywords: [ncbi, pubmed, pmc, full text, fulltext, gene, protein, snp, clinvar, literature, paper, article, review, variant, genome, sequence, taxonomy, dna, rna]
 ---
 
 # NCBI Search — AI Agent 工具文档
@@ -111,7 +111,8 @@ AI Agent 请按以下优先级判断使用哪个数据库：
 |------|------|---------|
 | `ncbi_search.py` | **主脚本**：多数据库智能搜索，自动意图识别，PubMed 使用 EFetch 获取完整摘要 | 大多数情况，推荐使用 |
 | `pubmed_search.py` | **PubMed 专用**：自然语言转检索式，MeSH 词识别（含多词短语） | 仅 PubMed 检索，需要智能解析 |
-| `pubmed_fetch.py` | **批量获取**：通过 PMID 列表批量获取文献详情，支持 200 PMID 分批 | 已有 PMID 列表，需要批量获取 |
+| `pubmed_fetch.py` | **批量获取**：通过 PMID 列表批量获取文献详情，支持 200 PMID 分批 | 已有 PMID 列表，需要批量获取摘要 |
+| `pmc_fetch.py` | **PMC 全文获取**：通过 EFetch(db=pmc) 下载 PubMed Central 开放获取文献全文，解析 JATS XML 为分节正文，支持 PMID 自动转 PMCID | 需要文献**正文全文**（而非仅摘要） |
 | `ncbi_utils.py` | **工具函数**：共享工具函数、缓存、编码修复 | 被其他脚本调用，不直接使用 |
 
 ### 3.2 自动模式（推荐）
@@ -142,6 +143,28 @@ python scripts/pubmed_search.py "APOE gene and Alzheimer disease" --years 5
 python scripts/pubmed_search.py "Smith J author Alzheimer" --max 20
 python scripts/pubmed_search.py "diabetes treatment" --sort pub_date --max 20
 ```
+
+### 3.5 PMC 全文获取（正文，而非摘要）
+
+当用户需要文献**正文全文**（不只是摘要）时使用 `pmc_fetch.py`。它通过 EFetch(`db=pmc`) 下载 PubMed Central 开放获取文献的 JATS XML 并解析为分节正文。
+
+```bash
+# 直接用 PMC ID（PMC 前缀可选）
+python scripts/pmc_fetch.py PMC8241728
+python scripts/pmc_fetch.py 8241728 5334499
+
+# 用 PMID 获取（自动经 ELink 转换为 PMCID）
+python scripts/pmc_fetch.py 34239348 33597265 --pmid --abstract full
+
+# 先看章节大纲判断结构（最省 Token），再决定是否取全文
+python scripts/pmc_fetch.py PMC8241728 --outline
+
+# 截断超长正文 / JSON 结构化输出
+python scripts/pmc_fetch.py PMC8241728 --max-chars 3000
+python scripts/pmc_fetch.py PMC8241728 --format json -o fulltext.json
+```
+
+> **重要**: 只有 **PMC 开放获取子集（Open Access Subset）** 的文献能返回正文；其他文献仅返回元数据+摘要并标注 `Open Access Full Text: No`。典型工作流：先用 `ncbi_search.py`/`pubmed_search.py` 拿到 PMID，再用 `pmc_fetch.py <PMID> --pmid` 获取全文。
 
 ---
 
@@ -192,6 +215,22 @@ python scripts/pubmed_search.py "diabetes treatment" --sort pub_date --max 20
 | `--full-abstract` | bool | false | 显示完整摘要（不截断）[向后兼容，等同 --abstract full] |
 | `--abstract` | str | preview | 摘要显示级别：none(仅标题), preview(前1000字符), full(完整) |
 | `--batch-size` | int | 200 | 每批获取的最大 PMID 数 |
+| `--output` / `-o` | str | - | 保存结果到文件 |
+| `--api-key` | str | env var | NCBI API Key |
+| `--verbose` / `-v` | bool | false | 显示详细信息 |
+
+### 4.3b pmc_fetch.py 参数
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `ids` | 必填 | - | PMC ID 列表（如 PMC8241728 或 8241728），或配合 `--pmid` 传入 PMID |
+| `--file` / `-f` | str | - | 从文件读取 ID 列表（每行一个） |
+| `--pmid` | bool | false | 将输入视为 PMID，经 ELink 自动转换为 PMCID |
+| `--outline` | bool | false | 仅显示章节大纲（不含正文段落），最省 Token |
+| `--max-chars` | int | 0 | 截断正文到 N 字符（0 = 不限制） |
+| `--abstract` | str | full | 摘要显示级别：none, preview(前1000字符), full |
+| `--batch-size` | int | 20 | 每批获取的最大 PMC ID 数 |
+| `--format` | str | summary | 输出格式：summary 或 json |
 | `--output` / `-o` | str | - | 保存结果到文件 |
 | `--api-key` | str | env var | NCBI API Key |
 | `--verbose` / `-v` | bool | false | 显示详细信息 |
@@ -610,6 +649,7 @@ ncbi-search/
 │   ├── ncbi_search.py          # 主脚本：多数据库智能搜索（PubMed 用 EFetch）
 │   ├── pubmed_search.py        # PubMed 专用：自然语言转检索式（宽松策略 + ElementTree）
 │   ├── pubmed_fetch.py         # 批量获取：分批处理 + 完整摘要
+│   ├── pmc_fetch.py            # PMC 全文获取：EFetch db=pmc + JATS 解析（PMID 自动转 PMCID）
 │   ├── ncbi_utils.py           # 工具函数（缓存 + 编码修复 + ElementTree 辅助）
 │   └── test_ncbi.py            # 单元测试
 └── references/
@@ -619,6 +659,15 @@ ncbi-search/
 ---
 
 ## 13. 更新日志
+
+### v3 (2026-07-29)
+
+**功能增强：**
+- ✅ **PMC 开放获取全文获取**: 新增 `pmc_fetch.py`，通过 EFetch(`db=pmc`) 直接下载 PubMed Central 开放获取文献的 JATS XML 并解析为分节正文
+- ✅ **PMID 自动转 PMCID**: `--pmid` 选项经 ELink(`linkname=pubmed_pmc`) 将 PMID 转换为其对应 PMCID
+- ✅ **Token 友好**: `--outline` 仅显示章节大纲，`--max-chars` 截断超长正文，`--abstract` 三级摘要
+- ✅ **优雅降级**: 非开放获取文献标注 `Open Access Full Text: No` 并保留元数据+摘要；不在 PMC 的 PMID 提示 `Not in PMC`
+- ✅ 新增 PMC 解析与 PMC ID 归一化的离线单元测试
 
 ### v2 (2026-07-08)
 

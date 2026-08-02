@@ -22,6 +22,7 @@
 - 📚 **多数据库支持** - PubMed, Gene, Protein, dbSNP, ClinVar 等 10+ 数据库
 - 🔄 **自然语言转换** - 宽松策略：MeSH词和基因符号加字段标签，普通关键词原样传入 PubMed
 - 📄 **分级摘要输出** - PubMed 结果支持三级摘要显示：`--abstract none`（仅标题）、`preview`（前1000字符，默认）、`full`（完整摘要），渐进式检索节省 Token
+- 📖 **PMC 全文获取** - 通过 EFetch 直接下载 PubMed Central 开放获取（Open Access）文献全文，自动解析 JATS XML 为分节正文，支持 PMID 自动转 PMCID
 - 🏗️ **ElementTree 解析** - 结构化 XML 解析替代脆弱正则，支持结构化摘要和机构作者
 - ⚡ **零外部依赖** - 仅需 `requests`，直接调用 NCBI 官方 E-Utilities API
 - 💾 **SQLite 本地缓存** - 自动缓存查询结果，二次查询毫秒级响应
@@ -185,6 +186,30 @@ python scripts/pubmed_fetch.py -f pmids.txt --format summary --abstract full -o 
 python scripts/pubmed_fetch.py -f pmids.txt --batch-size 100
 ```
 
+#### PMC 开放获取全文获取
+
+`pubmed_fetch.py` 只能拿到摘要；如需**正文全文**，使用 `pmc_fetch.py`，它通过 EFetch（`db=pmc`）直接下载 PubMed Central 开放获取文献的 JATS XML 并解析为分节正文。
+
+```bash
+# 直接用 PMC ID 获取全文（PMC 前缀可选）
+python scripts/pmc_fetch.py PMC8241728
+python scripts/pmc_fetch.py 8241728 5334499
+
+# 用 PMID 获取（自动经 ELink 转换为 PMCID）
+python scripts/pmc_fetch.py 34239348 33597265 --pmid --abstract full
+
+# 只看章节大纲（节省 Token，先判断结构再决定是否取全文）
+python scripts/pmc_fetch.py PMC8241728 --outline
+
+# 截断超长正文（例如仅取前 3000 字符）
+python scripts/pmc_fetch.py PMC8241728 --max-chars 3000
+
+# JSON 结构化输出（含 content 分块、full_text 全文）
+python scripts/pmc_fetch.py PMC8241728 --format json -o fulltext.json
+```
+
+> **注意**: 只有属于 **PMC 开放获取子集（Open Access Subset）** 的文献才能返回正文全文；其他文献仅返回元数据与摘要，并标注 `Open Access Full Text: No`（出版商不允许下载 XML 全文）。不在 PMC 中的 PMID 会被跳过并提示 `Not in PMC`。
+
 ### 💾 本地缓存机制
 
 工具内置了零外部依赖的 SQLite 本地自动缓存，所有 NCBI API 响应结果会自动持久化存储在 `.ncbi_cache/cache.db` 中。
@@ -304,6 +329,27 @@ python scripts/pubmed_fetch.py <pmids...> [options]
   --verbose             显示详细信息
 ```
 
+#### pmc_fetch.py（PMC 全文获取）
+
+```
+python scripts/pmc_fetch.py <ids...> [options]
+
+必需参数:
+  ids                   PMC ID 列表（如 PMC8241728 或 8241728），或配合 --pmid 传入 PMID
+
+可选参数:
+  --file / -f FILE      从文件读取 ID 列表（每行一个）
+  --pmid                将输入视为 PMID，自动经 ELink 转换为 PMCID
+  --outline             仅显示章节大纲（不含正文段落），节省 Token
+  --max-chars N         截断正文到 N 字符（0 = 不限制，默认）
+  --abstract MODE       摘要显示级别: none, preview(前1000字符), full（默认）
+  --batch-size N        每批获取的最大 PMC ID 数（默认: 20）
+  --format FORMAT       输出格式: summary, json（默认: summary）
+  --output FILE         保存到文件
+  --api-key KEY         NCBI API Key
+  --verbose             显示详细信息
+```
+
 ### 🔄 自然语言转换策略（v2）
 
 `pubmed_search.py` 的自然语言转换采用**宽松策略**：
@@ -330,6 +376,7 @@ ncbi-search/
 │   ├── ncbi_search.py          # 主脚本（多数据库智能搜索，PubMed 用 EFetch）
 │   ├── pubmed_search.py        # PubMed 专用（自然语言转检索式 + ElementTree）
 │   ├── pubmed_fetch.py         # PMID 批量获取（分批处理 + 完整摘要）
+│   ├── pmc_fetch.py            # PMC 开放获取全文获取（EFetch db=pmc + JATS 解析）
 │   ├── ncbi_utils.py           # 共享工具函数（缓存 + 编码修复 + ElementTree 辅助）
 │   └── test_ncbi.py            # 单元测试套件
 └── references/
@@ -349,6 +396,15 @@ python scripts/test_ncbi.py
 本项目设计为 AI Agent（如 Claude、Gemini 等）的技能插件。在 SKILL.md 中定义了详细的触发规则和使用说明。
 
 ### 📋 更新日志
+
+#### v3 (2026-07-29)
+
+**功能增强：**
+- ✅ **PMC 开放获取全文获取**: 新增 `pmc_fetch.py`，通过 EFetch（`db=pmc`）直接下载 PubMed Central 开放获取文献的 JATS XML 并解析为分节正文
+- ✅ **PMID 自动转 PMCID**: `--pmid` 选项经 ELink（`linkname=pubmed_pmc`）自动将 PMID 转换为其对应 PMCID
+- ✅ **Token 友好**: `--outline` 仅显示章节大纲，`--max-chars` 截断超长正文，`--abstract` 三级摘要
+- ✅ **优雅降级**: 非开放获取文献标注 `Open Access Full Text: No`，仍返回元数据与摘要；不在 PMC 的 PMID 提示 `Not in PMC`
+- ✅ 新增 PMC 解析与 PMC ID 归一化的离线单元测试
 
 #### v2 (2026-07-08)
 
@@ -396,6 +452,7 @@ python scripts/test_ncbi.py
 - 📚 **Multi-Database Support** - PubMed, Gene, Protein, dbSNP, ClinVar, and 10+ more
 - 🔄 **Relaxed NL Strategy** - MeSH terms and gene symbols get field tags; plain keywords pass through to PubMed naturally
 - 📄 **Tiered Abstract Output** - Three-level abstract display: `--abstract none` (titles only), `preview` (1000 chars, default), `full` (complete) for progressive token-efficient search
+- 📖 **PMC Full Text** - Download PubMed Central Open Access full text directly via EFetch, parsing JATS XML into readable sections; supports PMID→PMCID auto-conversion
 - 🏗️ **ElementTree Parsing** - Structured XML parsing replaces fragile regex, supporting structured abstracts and collective authors
 - ⚡ **Minimal Dependencies** - Only `requests` needed; direct NCBI E-Utilities API calls
 - 💾 **SQLite Local Cache** - Automatic query caching with millisecond-level repeat lookups

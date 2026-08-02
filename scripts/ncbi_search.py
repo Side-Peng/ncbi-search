@@ -53,6 +53,9 @@ ESEARCH_URL = f"{EUTILS_BASE}/esearch.fcgi"
 ESUMMARY_URL = f"{EUTILS_BASE}/esummary.fcgi"
 EFETCH_URL = f"{EUTILS_BASE}/efetch.fcgi"
 
+# Maximum IDs per EFetch request (NCBI recommended limit)
+BATCH_SIZE = 200
+
 # Database configurations
 DATABASES = {
     "pubmed": {
@@ -326,22 +329,38 @@ def fetch_pubmed_articles(
     """
     P0 fix: Fetch PubMed articles using EFetch instead of ESummary.
     ESummary does NOT return abstracts — EFetch does.
+    P2 fix: Batch requests (max 200 IDs per EFetch) to avoid silent truncation.
     """
     if not ids:
         return []
     
-    params = {
-        "db": "pubmed",
-        "id": ",".join(ids),
-        "rettype": "xml",
-        "retmode": "xml"
-    }
+    all_articles = []
+    total_batches = (len(ids) + BATCH_SIZE - 1) // BATCH_SIZE
     
-    if api_key:
-        params["api_key"] = api_key
+    for i in range(total_batches):
+        batch = ids[i * BATCH_SIZE : (i + 1) * BATCH_SIZE]
+        if verbose or total_batches > 1:
+            print(f"Fetching batch {i + 1}/{total_batches} ({len(batch)} PMIDs)...", file=sys.stderr)
         
-    response_text = http_get(EFETCH_URL, params=params, api_key=api_key, timeout=60, verbose=verbose)
-    return parse_pubmed_xml(response_text)
+        params = {
+            "db": "pubmed",
+            "id": ",".join(batch),
+            "rettype": "xml",
+            "retmode": "xml"
+        }
+        
+        if api_key:
+            params["api_key"] = api_key
+            
+        response_text = http_get(EFETCH_URL, params=params, api_key=api_key, timeout=60, verbose=verbose)
+        all_articles.extend(parse_pubmed_xml(response_text))
+        
+        # Small delay between batches to respect rate limits
+        if i < total_batches - 1:
+            import time
+            time.sleep(0.5)
+    
+    return all_articles
 
 
 def parse_pubmed_xml(xml_text: str) -> List[Dict[str, Any]]:
