@@ -405,7 +405,7 @@ python scripts/test_ncbi.py
 
 ### 📋 更新日志
 
-#### v4.0.0 (2026-10-17) — 准确性与 token 效率重构
+#### v3.0.0 (2026-10-17) — 准确性与 token 效率重构
 
 - ✅ **准确性**：作者线索词门控、小写布尔映射、类型词边界、连字符/引号短语、解剖词不标 MeSH、年份→`[PDat]`、路由重写、Gene `[Gene Name]`、dbSNP `[UID]`
 - ✅ **Token**：默认 `--abstract none`、JSON 分级裁剪、按句摘要截断（结论优先）、PMC 默认 6000 字符、`--sections`
@@ -414,7 +414,7 @@ python scripts/test_ncbi.py
 - ⚠️ **破坏性变更**：默认输出层级与紧凑格式、JSON 字段调整（`total`/`id`/`offset`）
 - ✅ 文档同步（SKILL/parameters/result_format/AGENTS）+ 新增 OPTIMIZATION_PLAN.md；单测 7→27 项
 
-#### v3 (2026-07-29)
+#### v2.0.2 (2026-08-02) — PMC 全文获取与 EFetch 分批
 
 **功能增强：**
 - ✅ **PMC 开放获取全文获取**: 新增 `pmc_fetch.py`，通过 EFetch（`db=pmc`）直接下载 PubMed Central 开放获取文献的 JATS XML 并解析为分节正文
@@ -613,7 +613,7 @@ export NCBI_NO_CACHE=1
 
 ### 📋 Changelog
 
-#### v4.0.0 (2026-10-17) — Accuracy & token-efficiency refactor
+#### v3.0.0 (2026-10-17) — Accuracy & token-efficiency refactor
 
 - ✅ **Accuracy**: clue-word-gated author parsing, lower-case boolean mapping, type word boundaries, hyphen/quote phrase preservation, anatomy terms no longer MeSH-tagged, year → `[PDat]`, routing rewrite, Gene `[Gene Name]`, dbSNP `[UID]`
 - ✅ **Tokens**: default `--abstract none`, tier-aware JSON trimming, sentence-aware abstract preview (conclusions first), PMC 6000-char default, `--sections`

@@ -2,7 +2,7 @@
 
 > 版本历史存档。了解功能演进时查阅，运行时无需读取。
 
-## v4.0.0 (2026-10-17) — 检索准确性与 token 效率重构
+## v3.0.0 (2026-10-17) — 检索准确性与 token 效率重构
 
 **破坏性变更（默认行为）**
 - 默认摘要层级改为 `none`（仅标题+元数据）；`preview` 改为按句截断 ~400 字符（结论优先）
@@ -31,10 +31,11 @@
 - 各库专用单行输出（ClinVar/SRA/Assembly/BioSample/Taxonomy/dbSNP 字段增强）
 
 **文档与测试**
+- SKILL.md 瘦身：~700 行 → ~300 行，参数表/查询语法/结果解析/更新日志拆分到 `references/`（渐进披露，降低每次触发 token 开销）
 - SKILL/parameters/result_format/README/AGENTS 全面同步；新增 OPTIMIZATION_PLAN.md
 - 单测 7→27 项（转换层回归、各库格式化、sections、helper）
 
-## v3 (2026-07-29)
+## v2.0.2 (2026-08-02) — PMC 全文获取与 EFetch 分批
 
 **功能增强：**
 - ✅ **PMC 开放获取全文获取**: 新增 `pmc_fetch.py`，通过 EFetch(`db=pmc`) 直接下载 PubMed Central 开放获取文献的 JATS XML 并解析为分节正文
@@ -64,9 +65,3 @@
 - ✅ **批量 PMID 无分批**: `pubmed_fetch.py` 自动分批（每批 200 个 PMID）
 - ✅ **缓存未区分 API Key**: 缓存键排除 `api_key` 参数，不同 Key 的查询结果共享缓存
 - ✅ **requests 库缺失提示**: 导入失败时输出 `pip install requests` 安装指引
-
-## v3.1 (2026-08-31) — 文档重构
-
-- ✅ **SKILL.md 瘦身**: 从 ~700 行精简到 ~300 行，参数表/查询语法/结果解析/更新日志拆分到 `references/`（渐进披露，降低每次触发的 token 开销）
-- ✅ **frontmatter 规范化**: 移除 ZCode 不识别的 `allowed-tools`/`trigger-keywords`，新增 `when_to_use`，触发语句前置（ZCode 展示 description 时只取前 ~250 字符）
-- ✅ **路径约定**: 明确脚本路径相对于技能安装目录而非当前工作目录

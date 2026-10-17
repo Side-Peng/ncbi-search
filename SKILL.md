@@ -259,7 +259,7 @@ PMC 全文同理：先 `--outline` 看结构，确认需要再取正文（默认
 | `references/parameters.md` | 4 个脚本的完整参数表、参数组合合法性、批量处理 | 需要精确参数语义或组合规则时 |
 | `references/query_syntax.md` | PubMed 检索式语法：自然语言转换规则、字段标签、布尔运算、MeSH、通配符 | 构造复杂检索式或自动转换不理想时 |
 | `references/result_format.md` | 各数据库结果字段含义与提取建议 | 解析输出、提取特定字段时 |
-| `references/changelog.md` | v2-v4 版本历史 | 了解功能演进 |
+| `references/changelog.md` | v2-v3 版本历史 | 了解功能演进 |
 
 ---
 
@@ -285,7 +285,7 @@ ncbi-search/
 
 ---
 
-**版本**: v4.0.0
+**版本**: v3.0.0
 **技能状态**: 就绪
 **API 要求**: NCBI API Key（免费，推荐配置）
 **费用**: 完全免费

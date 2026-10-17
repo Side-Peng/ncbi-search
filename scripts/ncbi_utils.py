@@ -47,7 +47,7 @@ SESSION = None
 PREVIEW_CHARS = 400
 
 # Canonical version marker (keep in sync with references/changelog.md).
-__version__ = "4.0.0"
+__version__ = "3.0.0"
 
 # Cache Settings
 CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".ncbi_cache")
