@@ -405,6 +405,15 @@ python scripts/test_ncbi.py
 
 ### 📋 更新日志
 
+#### v4.0.0 (2026-10-17) — 准确性与 token 效率重构
+
+- ✅ **准确性**：作者线索词门控、小写布尔映射、类型词边界、连字符/引号短语、解剖词不标 MeSH、年份→`[PDat]`、路由重写、Gene `[Gene Name]`、dbSNP `[UID]`
+- ✅ **Token**：默认 `--abstract none`、JSON 分级裁剪、按句摘要截断（结论优先）、PMC 默认 6000 字符、`--sections`
+- ✅ **效率**：ELink 批量、NCBI 错误体不缓存、Tier1 改 ESummary v2.0、SQLite WAL、tool/email 合规标识
+- ✅ **功能**：`--count-only`、`--offset` 翻页、`--min-year/--max-year`、批量 rsID、中文术语自动英译、MeSH 校验、各库专用格式化
+- ⚠️ **破坏性变更**：默认输出层级与紧凑格式、JSON 字段调整（`total`/`id`/`offset`）
+- ✅ 文档同步（SKILL/parameters/result_format/AGENTS）+ 新增 OPTIMIZATION_PLAN.md；单测 7→27 项
+
 #### v3 (2026-07-29)
 
 **功能增强：**
@@ -603,6 +612,15 @@ export NCBI_NO_CACHE=1
 > v1 added `[Title/Abstract]` to every word AND-connected, causing zero results for specialized term queries. v2 only tags MeSH/gene terms; plain keywords are handled by PubMed's native search engine.
 
 ### 📋 Changelog
+
+#### v4.0.0 (2026-10-17) — Accuracy & token-efficiency refactor
+
+- ✅ **Accuracy**: clue-word-gated author parsing, lower-case boolean mapping, type word boundaries, hyphen/quote phrase preservation, anatomy terms no longer MeSH-tagged, year → `[PDat]`, routing rewrite, Gene `[Gene Name]`, dbSNP `[UID]`
+- ✅ **Tokens**: default `--abstract none`, tier-aware JSON trimming, sentence-aware abstract preview (conclusions first), PMC 6000-char default, `--sections`
+- ✅ **Efficiency**: batched ELink, NCBI error bodies never cached, Tier-1 ESummary v2.0, SQLite WAL, tool/email identification
+- ✅ **Features**: `--count-only`, `--offset` paging, `--min-year/--max-year`, batch rsIDs, Chinese term auto-translation, MeSH validation, per-database formatters
+- ⚠️ **Breaking**: default output tier/format and JSON fields (`total`/`id`/`offset`)
+- ✅ Docs synced (SKILL/parameters/result_format/AGENTS) + OPTIMIZATION_PLAN.md; tests 7→27
 
 #### v2 (2026-07-08)
 
