@@ -1,5 +1,36 @@
 # PubMed Query Syntax Guide
 
+## Natural Language Conversion (pubmed_search.py)
+
+`pubmed_search.py` 自动将自然语言转换为标准检索式，采用**宽松策略**（v2 起）：MeSH 词和基因符号加字段标签，其他普通关键词原样传入，让 PubMed 搜索引擎自然处理，避免专有名词查询返回 0 篇。
+
+| 自然语言 | 转换后（v3 实际输出） | 说明 |
+|---------|--------|------|
+| `Alzheimer disease` | `"Alzheimer Disease"[MeSH]` | 多词 MeSH 短语匹配 |
+| `APOE gene` | `APOE[Title/Abstract]`（`gene` 作为停用词剔除） | 识别为基因符号 |
+| `p-tau217 Abeta42 Alzheimer biomarker` | `"Alzheimer Disease"[MeSH] AND (p-tau217 Abeta42 biomarker)` | 连字符词整体保留；非MeSH词作为原始关键词组 |
+| `Smith J author Alzheimer` | `"Alzheimer Disease"[MeSH] AND Smith J[Author]` | 仅在线索词（author/by/written by）存在时才解析作者 |
+| `last 5 years` | `2021/10/18:2026/10/17[PDat]`（滚动 N 年窗口） | 日期范围；日期按运行当天计算 |
+| `review` | `Review[pt]` | 文章类型（词边界匹配，不会误触 `industrial` 中的 `trial`） |
+| `Vitamin D deficiency` | `(Vitamin D deficiency)` | 作者正则不再误伤；单字母 D 保留 |
+| `alzheimer or parkinson` | `alzheimer OR parkinson` | 小写布尔词自动转大写并透传 |
+| `"blood-brain barrier" disruption` | `"blood-brain barrier" AND (disruption)` | 引号短语整体透传，不逐词标 MeSH |
+
+## Passing Manual Queries
+
+如果自动转换不满足需求，可以直接向 `ncbi_search.py` / `pubmed_search.py` 传入标准 PubMed 检索式——脚本检测到字段标签（`[...]`）或布尔运算符（`AND`/`OR`/`NOT`）时会跳过自动转换，原样透传：
+
+```bash
+# 复杂布尔检索
+python scripts/ncbi_search.py "(Alzheimer[Title/Abstract]) AND (APOE[Title/Abstract]) AND (Review[pt])"
+
+# 多字段组合
+python scripts/ncbi_search.py "(diabetes[MeSH]) AND (insulin[Title/Abstract]) AND (2020[PDat]:2025[PDat])"
+
+# 排除检索
+python scripts/ncbi_search.py "(Alzheimer[Title/Abstract]) NOT (mouse[Title/Abstract])"
+```
+
 ## Quick Reference
 
 | Field | Syntax | Example |
@@ -39,6 +70,8 @@ Use parentheses to group: `(Alzheimer OR dementia) AND treatment`
 --years 5    # Last 5 years
 --years 1    # Last 1 year
 ```
+
+> **注意（relevance + 日期）**：带 `--years` 时 `--sort relevance` 是"窗口内重排"，不是全库最相关的结果（top-N 与不带日期时完全不同；PubMed 网站会强制 Most Recent）。需要"最新文献"语义时请显式用 `--sort pub_date`。
 
 ## Article Type Filters
 

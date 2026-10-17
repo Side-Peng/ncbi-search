@@ -21,7 +21,7 @@
 - 🎯 **智能意图识别** - 自动判断搜索目标数据库（文献/基因/变异等），支持通用基因正则匹配
 - 📚 **多数据库支持** - PubMed, Gene, Protein, dbSNP, ClinVar 等 10+ 数据库
 - 🔄 **自然语言转换** - 宽松策略：MeSH词和基因符号加字段标签，普通关键词原样传入 PubMed
-- 📄 **分级摘要输出** - PubMed 结果支持三级摘要显示：`--abstract none`（仅标题）、`preview`（前1000字符，默认）、`full`（完整摘要），渐进式检索节省 Token
+- 📄 **分级摘要输出** - PubMed 结果支持三级摘要显示：`none`（仅标题+元数据，默认）、`preview`（按句截断约 400 字符，结论优先）、`full`（完整摘要+DOI+MeSH），渐进式检索节省 Token
 - 📖 **PMC 全文获取** - 通过 EFetch 直接下载 PubMed Central 开放获取（Open Access）文献全文，自动解析 JATS XML 为分节正文，支持 PMID 自动转 PMCID
 - 🏗️ **ElementTree 解析** - 结构化 XML 解析替代脆弱正则，支持结构化摘要和机构作者
 - ⚡ **零外部依赖** - 仅需 `requests`，直接调用 NCBI 官方 E-Utilities API
@@ -29,7 +29,9 @@
 - 💰 **完全免费** - 使用自己的 NCBI API Key，无任何费用
 - 🚀 **速率优化** - 自动重试、智能限流、支持高并发
 - 🛡️ **Windows 编码安全** - 自动处理 GBK/UTF-8 编码，不再因特殊字符崩溃
-- 🔀 **排序与分批** - `--sort` 按相关性/日期排序，批量 PMID 自动分批处理
+- 🔀 **排序与分批** - `--sort` 按相关性/日期排序，批量 PMID 自动分批处理；支持 `--min-year/--max-year` 年份区间与 `--offset` 翻页
+- 🀄 **中文术语** - 常见生物医学中文词自动英译（阿尔茨海默病→Alzheimer disease），词表外自动提示
+- 🧬 **批量 rsID** - `--db snp` 支持逗号分隔的多个 rsID（如 APOE rs429358, rs7412），一次精确取回
 - 🧪 **单元测试覆盖** - 内置自动化测试套件
 
 ### 📦 安装
@@ -131,7 +133,7 @@ URL: https://pubmed.ncbi.nlm.nih.gov/34239348/
 ----------------------------------------------------------------------
 ```
 
-> **v2 更新**：PubMed 结果现在支持三级摘要显示：`--abstract none`（仅标题）、`preview`（1000字符预览，默认）、`full`（完整摘要）。`--full-abstract` 仍可用作 `--abstract full` 的简写。
+> **v2 更新**：PubMed 结果现在支持三级摘要显示：`none`（仅标题+元数据，默认）、`preview`（约 400 字符按句截断，结论优先）、`full`（完整摘要+DOI+MeSH）。`--full-abstract` 仍可用作 `--abstract full` 的简写。
 
 #### Gene 基因检索
 
@@ -201,10 +203,13 @@ python scripts/pmc_fetch.py 34239348 33597265 --pmid --abstract full
 # 只看章节大纲（节省 Token，先判断结构再决定是否取全文）
 python scripts/pmc_fetch.py PMC8241728 --outline
 
-# 截断超长正文（例如仅取前 3000 字符）
+# 只取指定章节（按标题子串匹配，最省 Token）
+python scripts/pmc_fetch.py PMC8241728 --sections conclusion --max-chars 2000
+
+# 截断超长正文（默认 6000 字符；0 = 完整正文）
 python scripts/pmc_fetch.py PMC8241728 --max-chars 3000
 
-# JSON 结构化输出（含 content 分块、full_text 全文）
+# JSON 结构化输出（content 分块，不再重复存 full_text）
 python scripts/pmc_fetch.py PMC8241728 --format json -o fulltext.json
 ```
 
@@ -280,7 +285,7 @@ python scripts/ncbi_search.py <query> [options]
   --type TYPE           文章类型: review, clinical_trial 等（仅 PubMed）
   --sort SORT           排序方式: relevance, pub_date, Author, Journal（默认: relevance）
   --full-abstract       显示完整摘要（不截断，仅 PubMed）[向后兼容]
-  --abstract MODE       摘要显示级别: none(仅标题), preview(前1000字符,默认), full(完整)
+  --abstract MODE       摘要分级: none(仅标题,默认), preview(约400字符按句截断), full(完整)
   --organism ORGANISM   限制物种（仅 Gene）
   --format FORMAT       输出格式: summary, json（默认: summary）
   --output FILE         保存到文件
@@ -303,7 +308,7 @@ python scripts/pubmed_search.py <query> [options]
   --mesh MESH           MeSH 主题词筛选
   --sort SORT           排序方式: relevance, pub_date, Author, Journal（默认: relevance）
   --full-abstract       显示完整摘要（不截断）[向后兼容]
-  --abstract MODE       摘要显示级别: none(仅标题), preview(前1000字符,默认), full(完整)
+  --abstract MODE       摘要分级: none(仅标题,默认), preview(约400字符按句截断), full(完整)
   --format FORMAT       输出格式: summary, json（默认: summary）
   --output FILE         保存到文件
   --api-key KEY         NCBI API Key
@@ -322,7 +327,7 @@ python scripts/pubmed_fetch.py <pmids...> [options]
   --file / -f FILE      从文件读取 PMID 列表
   --format FORMAT       输出格式: summary, json（默认: json）
   --full-abstract       显示完整摘要（不截断）[向后兼容]
-  --abstract MODE       摘要显示级别: none(仅标题), preview(前1000字符,默认), full(完整)
+  --abstract MODE       摘要分级: none(仅标题,默认), preview(约400字符按句截断), full(完整)
   --batch-size N        每批获取的最大 PMID 数（默认: 200）
   --output FILE         保存到文件
   --api-key KEY         NCBI API Key
@@ -341,8 +346,8 @@ python scripts/pmc_fetch.py <ids...> [options]
   --file / -f FILE      从文件读取 ID 列表（每行一个）
   --pmid                将输入视为 PMID，自动经 ELink 转换为 PMCID
   --outline             仅显示章节大纲（不含正文段落），节省 Token
-  --max-chars N         截断正文到 N 字符（0 = 不限制，默认）
-  --abstract MODE       摘要显示级别: none, preview(前1000字符), full（默认）
+  --max-chars N         截断正文到 N 字符（默认 6000，0 = 不限制）
+  --abstract MODE       摘要分级: none, preview(约400字符,默认), full
   --batch-size N        每批获取的最大 PMC ID 数（默认: 20）
   --format FORMAT       输出格式: summary, json（默认: summary）
   --output FILE         保存到文件
@@ -369,7 +374,7 @@ python scripts/pmc_fetch.py <ids...> [options]
 ```
 ncbi-search/
 ├── README.md                   # 本文档
-├── SKILL.md                    # AI Agent 技能说明文档
+├── SKILL.md                    # AI Agent 技能说明文档（精简版：决策树 + 用法 + 速查）
 ├── .ncbi_cache/                # 本地 SQLite 缓存目录（自动生成）
 │   └── cache.db                # 缓存数据库
 ├── scripts/
@@ -379,8 +384,11 @@ ncbi-search/
 │   ├── pmc_fetch.py            # PMC 开放获取全文获取（EFetch db=pmc + JATS 解析）
 │   ├── ncbi_utils.py           # 共享工具函数（缓存 + 编码修复 + ElementTree 辅助）
 │   └── test_ncbi.py            # 单元测试套件
-└── references/
-    └── query_syntax.md         # PubMed 检索语法指南
+└── references/                 # 渐进披露：技能触发时按需加载，降低 token 开销
+    ├── parameters.md           # 完整参数表与批量处理
+    ├── query_syntax.md         # PubMed 检索语法指南（含自然语言转换规则）
+    ├── result_format.md        # 结果字段解析
+    └── changelog.md            # 更新日志
 ```
 
 ### 🧪 运行测试
@@ -451,7 +459,7 @@ python scripts/test_ncbi.py
 - 🎯 **Smart Intent Detection** - Automatically routes queries to appropriate databases, with universal gene symbol regex matching
 - 📚 **Multi-Database Support** - PubMed, Gene, Protein, dbSNP, ClinVar, and 10+ more
 - 🔄 **Relaxed NL Strategy** - MeSH terms and gene symbols get field tags; plain keywords pass through to PubMed naturally
-- 📄 **Tiered Abstract Output** - Three-level abstract display: `--abstract none` (titles only), `preview` (1000 chars, default), `full` (complete) for progressive token-efficient search
+- 📄 **Tiered Abstract Output** - Three-level abstract display: `none` (title + metadata, default), `preview` (~400 chars, sentence-aware, conclusions first), `full` (complete abstract + DOI + MeSH) for progressive token-efficient search
 - 📖 **PMC Full Text** - Download PubMed Central Open Access full text directly via EFetch, parsing JATS XML into readable sections; supports PMID→PMCID auto-conversion
 - 🏗️ **ElementTree Parsing** - Structured XML parsing replaces fragile regex, supporting structured abstracts and collective authors
 - ⚡ **Minimal Dependencies** - Only `requests` needed; direct NCBI E-Utilities API calls
@@ -552,7 +560,7 @@ URL: https://pubmed.ncbi.nlm.nih.gov/34239348/
 ----------------------------------------------------------------------
 ```
 
-> **v2 update**: PubMed results now support three-level abstract display: `--abstract none` (titles only), `preview` (1000-char preview, default), `full` (complete). `--full-abstract` still works as shorthand for `--abstract full`.
+> **v2 update**: PubMed results now support three-level abstract display: `none` (title + metadata, default), `preview` (~400-char sentence-aware preview, conclusions first), `full` (complete + DOI + MeSH). `--full-abstract` still works as shorthand for `--abstract full`.
 
 #### Batch Fetching
 

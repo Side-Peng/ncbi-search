@@ -11,6 +11,7 @@ import unittest
 import time
 import shutil
 import sqlite3
+from datetime import datetime
 
 # Adjust paths to import our modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -203,6 +204,224 @@ class TestNCBISearchSkill(unittest.TestCase):
         self.assertEqual(art["full_text"], "")
         self.assertEqual(art["char_count"], 0)
         self.assertEqual(art["abstract"], "Only the abstract is available here.")
+
+
+class TestQueryConversion(unittest.TestCase):
+    """Conversion-layer regressions: each case maps to a measured recall bug."""
+
+    @classmethod
+    def setUpClass(cls):
+        from pubmed_search import detect_query_elements, build_pubmed_query
+        cls.detect = staticmethod(detect_query_elements)
+        cls.build = staticmethod(build_pubmed_query)
+
+    def convert(self, query):
+        return self.build(query, self.detect(query))[0]
+
+    def test_author_regex_requires_clue_word(self):
+        # "Vitamin D" used to become "Vitamin D[Author]" -> 3 results vs 44,183.
+        for query in ("Vitamin D deficiency",
+                      "Hepatitis B virus treatment",
+                      "Influenza A vaccine"):
+            self.assertNotIn("[Author]", self.convert(query), query)
+        self.assertIn("Smith J[Author]", self.convert("Smith J author Alzheimer"))
+
+    def test_lowercase_boolean_preserved(self):
+        # Lower-case "or" used to be dropped, turning OR into AND.
+        self.assertEqual(self.convert("alzheimer or parkinson"),
+                         "alzheimer OR parkinson")
+
+    def test_article_type_word_boundary(self):
+        # indusTRIAL must not inject Clinical Trial[pt].
+        self.assertNotIn("Clinical Trial[pt]",
+                         self.convert("industrial chemical exposure"))
+        self.assertIn("Review[pt]", self.convert("cancer review"))
+
+    def test_hyphenated_tokens_preserved(self):
+        self.assertIn("IL-6", self.convert("IL-6 inflammation"))
+        self.assertIn("p-tau217", self.convert("p-tau217 biomarker"))
+        self.assertIn("B cell lymphoma", self.convert("B cell lymphoma"))
+
+    def test_quoted_phrase_passthrough(self):
+        output = self.convert('"blood-brain barrier" disruption')
+        self.assertIn('"blood-brain barrier"', output)
+        self.assertNotIn('"Blood"[MeSH]', output)
+        self.assertNotIn('"Brain"[MeSH]', output)
+
+    def test_anatomy_words_not_mesh_tagged(self):
+        # "Brain"[MeSH] expanded the anatomy tree and halved recall.
+        output = self.convert("brain tumor treatment")
+        self.assertNotIn('"Brain"[MeSH]', output)
+
+    def test_stopwords_do_not_leak(self):
+        output = self.convert("Alzheimer last 5 years")
+        self.assertNotIn("(last years)", output)
+        self.assertIn("[PDat]", output)
+        self.assertIn('"Alzheimer Disease"[MeSH]', output)
+        output2 = self.convert("APOE gene and Alzheimer disease")
+        self.assertNotIn("(gene)", output2)
+
+    def test_year_maps_to_pdat(self):
+        self.assertIn("2020[PDat]", self.convert("cancer 2020"))
+
+    def test_routing_fixes(self):
+        from ncbi_search import detect_database
+        self.assertEqual(detect_database("blood pressure"), "pubmed")
+        self.assertEqual(detect_database("cancer treatment"), "pubmed")
+        self.assertEqual(detect_database("cell cycle"), "pubmed")
+        self.assertEqual(detect_database("DNA repair review"), "pubmed")
+        self.assertEqual(detect_database("human genome project"), "pubmed")
+        self.assertEqual(detect_database("APOE gene"), "gene")
+        self.assertEqual(detect_database("SHANK3 function"), "gene")
+        self.assertEqual(detect_database("rs429358"), "snp")
+
+    def test_abstract_preview_keeps_conclusions(self):
+        from ncbi_utils import truncate_abstract
+        structured = (
+            "BACKGROUND: Alzheimer disease is common. METHODS: We studied patients. "
+            "RESULTS: APOE4 carriers declined faster. CONCLUSIONS: APOE4 predicts decline."
+        )
+        preview = truncate_abstract(structured, 60)
+        self.assertLessEqual(len(preview), 70)
+        self.assertIn("APOE4", preview)
+        self.assertNotIn("BACKGROUND:", preview)
+
+
+class TestFormatters(unittest.TestCase):
+    """Output formatters for non-PubMed databases and PMC (offline, synthetic records)."""
+
+    def test_snp_formatter_merged_and_maf(self):
+        from ncbi_search import format_snp_results
+        records = [{
+            "_id": "429358", "snp_id": 429358,
+            "genes": [{"name": "APOE", "gene_id": "348"}],
+            "chrpos": "19:44908684",
+            "global_mafs": [{"study": "1000Genomes", "freq": "C=0.1505591/754"}],
+            "clinical_significance": "association,drug-response,risk-factor,protective",
+        }]
+        out = format_snp_results(records, 3, "rs429358")
+        self.assertIn("rs429358", out)
+        self.assertIn("APOE", out)
+        self.assertIn("chr19:44908684", out)
+        self.assertIn("MAF C=0.151 (1000Genomes)", out)
+        self.assertIn("association, drug-response, risk-factor, protective", out)
+
+    def test_snp_formatter_merged_marker(self):
+        from ncbi_search import format_snp_results
+        records = [{"_id": "61228756", "snp_id": 429358, "merged": 1,
+                    "genes": [], "chrpos": "19:44908684"}]
+        out = format_snp_results(records, 3, "rs429358")
+        self.assertIn("merged->rs429358", out)
+
+    def test_clinvar_formatter(self):
+        from ncbi_search import format_clinvar_results
+        records = [{
+            "uid": "5016490", "accession": "VCV005016490", "title": "Single allele",
+            "variation_set": [{
+                "variation_name": "Single allele",
+                "variation_loc": [{"chr": "17", "start": "43095510",
+                                   "stop": "43114978", "assembly_name": "GRCh38"}],
+            }],
+            "germline_classification": {
+                "description": "Likely pathogenic",
+                "review_status": "criteria provided, single submitter",
+                "trait_set": [{"trait_name": "Breast-ovarian cancer, familial, susceptibility to, 1"}],
+            },
+        }]
+        out = format_clinvar_results(records, 1, "BRCA1")
+        self.assertIn("VCV005016490", out)
+        self.assertIn("Likely pathogenic", out)
+        self.assertIn("chr17:43095510-43114978 (GRCh38)", out)
+        self.assertIn("Breast-ovarian", out)
+
+    def test_assembly_and_taxonomy_formatters(self):
+        from ncbi_search import format_assembly_results, format_taxonomy_results
+        asm = [{"_id": "11968211", "assemblyaccession": "GCF_000001405.40",
+                "assemblyname": "GRCh38.p14", "organism": "Homo sapiens (human)",
+                "assemblystatus": "Chromosome", "refseq_category": "reference genome",
+                "asmreleasedate_refseq": "2022/02/08 00:00"}]
+        out = format_assembly_results(asm, 16, "GRCh38")
+        self.assertIn("GCF_000001405.40", out)
+        self.assertIn("GRCh38.p14", out)
+        self.assertIn("reference genome", out)
+
+        tax = [{"_id": "9606", "scientificname": "Homo sapiens", "commonname": "human",
+                "rank": "species", "division": "primates"}]
+        out2 = format_taxonomy_results(tax, 1, "Homo sapiens")
+        self.assertIn("9606", out2)
+        self.assertIn("Homo sapiens (human)", out2)
+        self.assertIn("species", out2)
+
+    def test_sra_formatter(self):
+        from ncbi_search import format_sra_results
+        xml = ('<Summary><Title>t</Title><Statistics total_runs="1" total_spots="196233032"/></Summary>'
+               '<Experiment acc="DRX783447" ver="1" status="public" name="n"/>'
+               '<Study acc="DRP019600" name="sn-RNA seq of AHN dysfunction AD model mice"/>'
+               '<Organism taxid="10090" ScientificName="Mus musculus"/>'
+               '<Library_descriptor><LIBRARY_STRATEGY>RNA-Seq</LIBRARY_STRATEGY></Library_descriptor>')
+        records = [{"_id": "46962526", "expxml": xml, "createdate": "2026/09/25"}]
+        out = format_sra_results(records, 1320, "RNA-seq")
+        self.assertIn("DRX783447", out)
+        self.assertIn("sn-RNA seq", out)
+        self.assertIn("Mus musculus", out)
+        self.assertIn("RNA-Seq", out)
+        self.assertIn("196,233,032 spots", out)
+
+    def test_pmc_sections_filter(self):
+        from pmc_fetch import _filter_sections
+        blocks = [
+            {"type": "heading", "level": 1, "text": "Introduction"},
+            {"type": "paragraph", "text": "intro"},
+            {"type": "heading", "level": 1, "text": "Results"},
+            {"type": "paragraph", "text": "result"},
+            {"type": "heading", "level": 2, "text": "Sub result"},
+            {"type": "paragraph", "text": "sub"},
+            {"type": "heading", "level": 1, "text": "Conclusions and future directions"},
+            {"type": "paragraph", "text": "conclusion"},
+        ]
+        out = _filter_sections(blocks, ["conclusion", "results"])
+        texts = [block["text"] for block in out]
+        self.assertIn("Results", texts)
+        self.assertIn("result", texts)
+        self.assertIn("Conclusions and future directions", texts)
+        self.assertIn("conclusion", texts)
+        self.assertNotIn("Introduction", texts)
+
+    def test_trim_json_keeps_record_id(self):
+        from ncbi_search import trim_json_record
+        record = {"_id": "348", "name": "APOE", "abstract": "x" * 600, "mesh_terms": ["a"]}
+        out = trim_json_record(record, "none")
+        self.assertEqual(out["id"], "348")
+        self.assertNotIn("_id", out)
+        self.assertNotIn("abstract", out)
+
+
+class TestQueryHelpers(unittest.TestCase):
+    """Helpers added in P4: batch rsIDs, year ranges, Chinese translation."""
+
+    def test_snp_uid_term(self):
+        from ncbi_search import _snp_uid_term
+        self.assertEqual(_snp_uid_term("rs429358"), "429358[UID]")
+        self.assertEqual(_snp_uid_term("rs429358, rs7412"),
+                         "429358[UID] OR 7412[UID]")
+        self.assertIsNone(_snp_uid_term("APOE rs429358"))
+        self.assertIsNone(_snp_uid_term("APOE"))
+
+    def test_date_filter(self):
+        from ncbi_utils import date_filter
+        self.assertEqual(date_filter(None, 2020, 2023), "2020:2023[PDat]")
+        self.assertEqual(date_filter(None, 2020, None),
+                         f"2020:{datetime.now().year}[PDat]")
+        self.assertIsNone(date_filter(None, None, None))
+        self.assertIn("[PDat]", date_filter(5, None, None))
+
+    def test_chinese_translation(self):
+        from ncbi_utils import translate_chinese
+        out = translate_chinese("阿尔茨海默病 综述")
+        self.assertIn("Alzheimer disease", out)
+        self.assertIn("review", out)
+        self.assertEqual(translate_chinese("APOE"), "APOE")
+        self.assertEqual(translate_chinese("焦亡"), "焦亡")
 
 
 if __name__ == "__main__":

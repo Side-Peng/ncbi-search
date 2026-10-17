@@ -17,10 +17,14 @@ import json
 import argparse
 from typing import List, Optional
 
-# Import from pubmed_search
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import requests
+from ncbi_utils import NCBIError
+
+# Import from pubmed_search
 from pubmed_search import (
-    fetch_articles, get_api_key, format_output, DEFAULT_ABSTRACT_LENGTH,
+    fetch_articles, get_api_key, format_output,
     ABSTRACT_CHOICES, DEFAULT_ABSTRACT_MODE
 )
 
@@ -57,7 +61,7 @@ def fetch_articles_batched(
     
     for i in range(total_batches):
         batch = pmids[i * batch_size : (i + 1) * batch_size]
-        if verbose or total_batches > 1:
+        if verbose:
             print(f"Fetching batch {i + 1}/{total_batches} ({len(batch)} PMIDs)...", file=sys.stderr)
         
         articles = fetch_articles(batch, api_key, verbose)
@@ -85,17 +89,21 @@ Examples:
     
     parser.add_argument("pmids", nargs="*", help="PMIDs to fetch")
     parser.add_argument("--file", "-f", help="File containing PMIDs (one per line)")
-    parser.add_argument("--format", choices=["json", "summary"], default="json")
-    parser.add_argument("--full-abstract", action="store_true", help="显示完整摘要（不截断）[向后兼容，等同 --abstract full]")
+    parser.add_argument("--format", choices=["json", "summary"], default="summary")
+    parser.add_argument("--full-abstract", action="store_true", help="显示完整摘要（不截断）[等同 --abstract full]")
     parser.add_argument("--abstract", choices=ABSTRACT_CHOICES, default=DEFAULT_ABSTRACT_MODE,
-                        help="摘要显示级别: none(仅标题元数据), preview(前1000字符,默认), full(完整摘要)")
+                        help="摘要显示级别: none(仅标题元数据, 默认), preview(~400字符按句截断), full(完整摘要)")
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE, 
-                        help=f"每批获取的最大 PMID 数 (默认: {BATCH_SIZE})")
+                        help=f"每批获取的最大 PMID 数 (默认: {BATCH_SIZE}, 上限 200)")
     parser.add_argument("--output", "-o", help="Save to file")
     parser.add_argument("--api-key", help="NCBI API key")
     parser.add_argument("--verbose", "-v", action="store_true", help="显示详细信息")
     
     args = parser.parse_args()
+
+    if args.batch_size < 1 or args.batch_size > 200:
+        args.batch_size = max(1, min(args.batch_size, 200))
+        print(f"Warning: --batch-size adjusted to {args.batch_size} (allowed 1-200)", file=sys.stderr)
     
     # Collect PMIDs
     pmids = args.pmids
@@ -106,8 +114,12 @@ Examples:
         print("Error: No PMIDs provided", file=sys.stderr)
         sys.exit(1)
     
-    # Validate PMIDs
-    pmids = [p for p in pmids if p.isdigit()]
+    # Validate PMIDs (dedupe, drop non-numeric with a hint)
+    raw_count = len(pmids)
+    pmids = list(dict.fromkeys(p for p in pmids if p.isdigit()))
+    skipped = raw_count - len(pmids)
+    if skipped:
+        print(f"Warning: {skipped} duplicate or non-numeric PMID(s) skipped", file=sys.stderr)
     
     if not pmids:
         print("Error: No valid PMIDs found", file=sys.stderr)
@@ -115,14 +127,13 @@ Examples:
     
     api_key = get_api_key(args)
     
-    # P2 fix: Network error handling
     try:
-        print(f"Fetching {len(pmids)} articles...", file=sys.stderr)
+        if args.verbose:
+            print(f"Fetching {len(pmids)} articles...", file=sys.stderr)
         
-        # P3 fix: Use batched fetching for large lists
+        # Use batched fetching for large lists
         articles = fetch_articles_batched(pmids, api_key, args.batch_size, args.verbose)
         
-        # Format (P1 fix: pass full_abstract option)
         output = format_output(articles, len(articles), "PMID fetch", "Batch fetch by PMID", args.format, args.full_abstract, args.abstract)
         
         # Output
@@ -133,20 +144,21 @@ Examples:
         else:
             print(output)
     
+    except requests.exceptions.ConnectionError:
+        print("Error: cannot reach NCBI (network problem or blocked host).", file=sys.stderr)
+        sys.exit(1)
+    except requests.exceptions.Timeout:
+        print("Error: NCBI request timed out; retry or lower --batch-size.", file=sys.stderr)
+        sys.exit(1)
+    except requests.exceptions.HTTPError as e:
+        code = getattr(getattr(e, "response", None), "status_code", "?")
+        print(f"Error: NCBI HTTP {code}.", file=sys.stderr)
+        sys.exit(1)
+    except NCBIError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
     except Exception as e:
-        # Import requests for specific error types
-        try:
-            import requests
-            if isinstance(e, requests.exceptions.ConnectionError):
-                print("Error: 无法连接到 NCBI 服务器，请检查网络连接。", file=sys.stderr)
-            elif isinstance(e, requests.exceptions.Timeout):
-                print("Error: NCBI 服务器响应超时，请稍后重试。", file=sys.stderr)
-            elif isinstance(e, requests.exceptions.HTTPError):
-                print(f"Error: NCBI 服务器返回错误: {e}", file=sys.stderr)
-            else:
-                print(f"Error: {type(e).__name__}: {e}", file=sys.stderr)
-        except ImportError:
-            print(f"Error: {type(e).__name__}: {e}", file=sys.stderr)
+        print(f"Error: {type(e).__name__}: {e}", file=sys.stderr)
         sys.exit(1)
 
 

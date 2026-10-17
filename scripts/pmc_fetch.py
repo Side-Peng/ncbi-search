@@ -25,7 +25,7 @@ from typing import List, Optional, Dict, Any
 # Ensure we can import ncbi_utils from the scripts directory
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
-    from ncbi_utils import http_get, get_element_text
+    from ncbi_utils import http_get, get_element_text, truncate_abstract, NCBIError
 except ImportError:
     print("Error: Could not import ncbi_utils.py from the scripts directory.", file=sys.stderr)
     sys.exit(1)
@@ -93,50 +93,55 @@ def _clean(text: Optional[str]) -> str:
     return " ".join(text.split())
 
 
-def pmid_to_pmcid(pmid: str, api_key: Optional[str] = None, verbose: bool = False) -> Optional[str]:
-    """Map a single PMID to its own PMCID via ELink (linkname=pubmed_pmc).
-
-    Returns the numeric PMCID string, or None if the article is not in PMC.
-    linkname=pubmed_pmc restricts the result to the article's own PMC record
-    (excluding pubmed_pmc_refs, which are citing articles).
-    """
-    params = {
-        "dbfrom": "pubmed",
-        "db": "pmc",
-        "id": pmid,
-        "linkname": "pubmed_pmc",
-        "retmode": "json",
-    }
-    if api_key:
-        params["api_key"] = api_key
-
-    response_text = http_get(ELINK_URL, params=params, api_key=api_key, timeout=30, verbose=verbose)
-    try:
-        data = json.loads(response_text)
-    except json.JSONDecodeError:
-        return None
-
-    for linkset in data.get("linksets", []):
-        for linksetdb in linkset.get("linksetdbs", []):
-            if linksetdb.get("linkname") == "pubmed_pmc":
-                links = linksetdb.get("links", [])
-                if links:
-                    return str(links[0])
-    return None
-
-
 def map_pmids_to_pmcids(
     pmids: List[str],
     api_key: Optional[str] = None,
     verbose: bool = False,
+    batch: int = 200,
 ) -> Dict[str, Optional[str]]:
-    """Map each PMID to a PMCID (or None). One ELink call per PMID for accuracy."""
+    """Map PMIDs to PMCIDs via batched ELink calls (max 200 IDs per request).
+
+    The old implementation issued one ELink request per PMID: 100 PMIDs took
+    ~33 s at the 3 req/s rate limit. ELink accepts comma-separated UIDs and
+    returns one linkset per input ID, so the mapping stays per-ID accurate.
+    """
     mapping: Dict[str, Optional[str]] = {}
-    for pmid in pmids:
-        mapping[pmid] = pmid_to_pmcid(pmid, api_key, verbose)
+    for i in range(0, len(pmids), batch):
+        chunk = pmids[i:i + batch]
+        params = {
+            "dbfrom": "pubmed",
+            "db": "pmc",
+            "id": ",".join(chunk),
+            "linkname": "pubmed_pmc",
+            "retmode": "json",
+        }
+        if api_key:
+            params["api_key"] = api_key
+
+        response_text = http_get(ELINK_URL, params=params, api_key=api_key, timeout=30, verbose=verbose)
+        try:
+            data = json.loads(response_text)
+        except json.JSONDecodeError:
+            data = {}
+
+        for linkset in data.get("linksets", []):
+            links = []
+            for linksetdb in linkset.get("linksetdbs", []):
+                if linksetdb.get("linkname") == "pubmed_pmc" and linksetdb.get("links"):
+                    links = linksetdb["links"]
+                    break
+            value = str(links[0]) if links else None
+            for uid in linkset.get("ids", []):
+                mapping[str(uid)] = value
+
+        for pmid in chunk:
+            mapping.setdefault(pmid, None)
+
         if verbose:
-            status = mapping[pmid] or "not in PMC"
-            print(f"PMID {pmid} -> PMC {status}", file=sys.stderr)
+            for pmid in chunk:
+                status = mapping[pmid] or "not in PMC"
+                print(f"PMID {pmid} -> PMC {status}", file=sys.stderr)
+
     return mapping
 
 
@@ -155,7 +160,7 @@ def fetch_fulltext_batched(
 
     for i in range(total_batches):
         batch = pmcids[i * batch_size:(i + 1) * batch_size]
-        if verbose or total_batches > 1:
+        if verbose:
             print(f"Fetching batch {i + 1}/{total_batches} ({len(batch)} PMC IDs)...", file=sys.stderr)
 
         params = {
@@ -243,7 +248,7 @@ def parse_pmc_xml(xml_text: str) -> List[Dict[str, Any]]:
             if not aid.text:
                 continue
             if id_type == "pmcid":
-                article["pmcid"] = aid.text.replace("PMC", "")
+                article["pmcid"] = aid.text[3:] if aid.text.upper().startswith("PMC") else aid.text
             elif id_type == "pmcaid" and "pmcid" not in article:
                 article["pmcid"] = aid.text
             elif id_type == "pmid":
@@ -343,84 +348,157 @@ def _render_body(blocks: List[Dict[str, Any]], outline: bool, max_chars: int) ->
     return lines
 
 
+def _truncate_blocks(blocks: List[Dict[str, Any]], max_chars: int) -> List[Dict[str, Any]]:
+    """Cumulative paragraph truncation for JSON output."""
+    out: List[Dict[str, Any]] = []
+    used = 0
+    for block in blocks:
+        if block["type"] == "paragraph":
+            text = block["text"]
+            if used + len(text) > max_chars:
+                remaining = max_chars - used
+                if remaining > 0:
+                    out.append({"type": "paragraph", "text": text[:remaining]})
+                out.append({"type": "paragraph", "text": "... [full text truncated]"})
+                break
+            used += len(text)
+        out.append(block)
+    return out
+
+
+def _filter_sections(blocks: List[Dict[str, Any]], wanted: Optional[List[str]]) -> List[Dict[str, Any]]:
+    """Keep only headings matching ``wanted`` and their paragraphs.
+
+    ``wanted`` entries are lower-case substrings; a matched section keeps its
+    descendants (nested headings). Empty ``wanted`` returns every block.
+    """
+    if not wanted:
+        return blocks
+    selected = []
+    stack = []  # [(level, text, matches)]
+    for block in blocks:
+        if block["type"] == "heading":
+            level = block["level"]
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            own = any(word in block["text"].lower() for word in wanted)
+            matches = own or any(matched for _, _, matched in stack)
+            stack.append((level, block["text"], matches))
+            if matches:
+                selected.append(block)
+        else:
+            if stack and stack[-1][2]:
+                selected.append(block)
+    return selected
+
+
+def _json_records(
+    articles: List[Dict[str, Any]],
+    abstract_mode: str,
+    outline: bool,
+    max_chars: int,
+    sections: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """JSON records without duplicate body storage (content blocks only)."""
+    records = []
+    for article in articles:
+        rec = {k: v for k, v in article.items()
+               if k not in ("abstract", "content", "full_text", "url")}
+        abstract = article.get("abstract")
+        if abstract_mode != "none" and abstract:
+            rec["abstract"] = (truncate_abstract(abstract)
+                               if abstract_mode == "preview" else abstract)
+        blocks = _filter_sections(article.get("content") or [], sections)
+        if outline:
+            blocks = [b for b in blocks if b.get("type") == "heading"]
+        elif max_chars:
+            blocks = _truncate_blocks(blocks, max_chars)
+        rec["content"] = blocks
+        records.append(rec)
+    return records
+
+
 def format_output(
     articles: List[Dict[str, Any]],
     fmt: str = "summary",
     body_mode: str = BODY_FULL,
     max_chars: int = 0,
-    abstract_mode: str = "full",
+    abstract_mode: str = "preview",
     unavailable: Optional[List[str]] = None,
+    sections: Optional[List[str]] = None,
 ) -> str:
-    """Format PMC results as JSON or human-readable summary."""
+    """Format PMC results as JSON or a compact human-readable summary."""
     unavailable = unavailable or []
     outline = body_mode == BODY_OUTLINE
 
     if fmt == "json":
         payload = {
-            "fetch_date": datetime.now().isoformat(),
             "requested": len(articles) + len(unavailable),
             "returned": len(articles),
             "full_text_available": sum(1 for a in articles if a.get("open_access")),
             "unavailable_pmids": unavailable,
-            "articles": articles,
+            "articles": _json_records(articles, abstract_mode, outline, max_chars, sections),
         }
-        return json.dumps(payload, indent=2, ensure_ascii=False)
+        return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
 
     # Summary (default)
     full_count = sum(1 for a in articles if a.get("open_access"))
     meta_only = len(articles) - full_count
 
-    lines = []
-    lines.append("=" * 70)
-    lines.append("PMC Full Text Results")
-    lines.append("=" * 70)
-    lines.append(f"Retrieved: {len(articles)} articles | Full text: {full_count} | Metadata only: {meta_only}")
+    lines = [f"# PMC | retrieved: {len(articles)} | full text: {full_count} | metadata only: {meta_only}"]
     if unavailable:
         lines.append(f"Not in PMC: {', '.join(unavailable)}")
-    lines.append("=" * 70)
+    if not articles:
+        lines.append("No results.")
+        return "\n".join(lines)
 
     for i, article in enumerate(articles, 1):
         pmcid = article.get("pmcid", "N/A")
-        lines.append(f"\n[{i}] PMCID: PMC{pmcid} | PMID: {article.get('pmid', 'N/A')}")
-        lines.append(f"Title: {article.get('title', 'N/A')}")
-
-        authors = article.get("authors", [])
+        head = f"[{i}] PMC{pmcid}"
+        if article.get("pmid"):
+            head += f" | PMID {article['pmid']}"
+        authors = article.get("authors") or []
+        author_str = ""
         if authors:
-            author_str = ", ".join(authors[:5])
-            if len(authors) > 5:
-                author_str += f" et al. ({len(authors)} authors)"
-            lines.append(f"Authors: {author_str}")
+            author_str = ", ".join(authors[:3])
+            if len(authors) > 3:
+                author_str += " et al."
+        journal = article.get("journal") or ""
+        year = article.get("year") or ""
+        meta = " | ".join(x for x in [
+            f"{journal} ({year})" if journal and year else journal,
+            author_str,
+        ] if x)
+        if meta:
+            head += f" | {meta}"
 
-        lines.append(f"Journal: {article.get('journal', 'N/A')} ({article.get('year', 'N/A')})")
+        lines.append("")
+        lines.append(head)
+        lines.append(f"Title: {article.get('title', 'N/A')}")
         if article.get("doi"):
             lines.append(f"DOI: {article['doi']}")
-        if article.get("url"):
-            lines.append(f"URL: {article['url']}")
 
         if article.get("open_access"):
-            lines.append(f"Open Access Full Text: Yes ({article.get('char_count', 0)} chars)")
+            lines.append(f"Full text: yes ({article.get('char_count', 0)} chars)")
         else:
-            lines.append("Open Access Full Text: No (publisher blocks XML full-text download)")
+            lines.append("Full text: no (publisher blocked XML download)")
 
-        # Abstract
         if abstract_mode != "none" and article.get("abstract"):
             abstract = article["abstract"]
-            if abstract_mode == "preview" and len(abstract) > 1000:
-                abstract = abstract[:1000] + "..."
+            if abstract_mode == "preview":
+                abstract = truncate_abstract(abstract)
             lines.append("")
             lines.append(f"Abstract: {abstract}")
 
-        # Body
         if article.get("open_access") and article.get("content"):
+            blocks = _filter_sections(article["content"], sections)
             lines.append("")
-            lines.append("--- Full Text ---" if not outline else "--- Section Outline ---")
-            lines.extend(_render_body(article["content"], outline, max_chars))
-        elif not article.get("open_access"):
-            lines.append("")
-            lines.append("Note: Full text XML not available. Open the URL above for the publisher's version.")
-
-        lines.append("")
-        lines.append("-" * 70)
+            if not blocks:
+                lines.append("--- Full Text ---")
+                lines.append(f"  (no section matched --sections {','.join(sections or [])})")
+            else:
+                lines.append("--- Section Outline ---" if outline else "--- Full Text ---")
+                lines.extend(_render_body(blocks, outline, max_chars))
 
     return "\n".join(lines)
 
@@ -448,10 +526,11 @@ Notes:
     parser.add_argument("--file", "-f", help="File containing IDs (one per line)")
     parser.add_argument("--pmid", action="store_true", help="Treat inputs as PubMed IDs and convert to PMCIDs via ELink")
     parser.add_argument("--outline", action="store_true", help="Show section headings only (no body paragraphs) — token-cheap structure preview")
-    parser.add_argument("--max-chars", type=int, default=0, help="Truncate body text to N chars (0 = unlimited, default)")
-    parser.add_argument("--abstract", choices=["none", "preview", "full"], default="full",
-                        help="Abstract display level: none, preview (first 1000 chars), full (default)")
-    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE, help=f"Max PMC IDs per EFetch request (default: {BATCH_SIZE})")
+    parser.add_argument("--sections", help="Only keep matching body sections (comma-separated, e.g. results,conclusion)")
+    parser.add_argument("--max-chars", type=int, default=6000, help="Truncate body text to N chars (0 = unlimited; default 6000)")
+    parser.add_argument("--abstract", choices=["none", "preview", "full"], default="preview",
+                        help="Abstract display level: none, preview (~400 chars, default), full")
+    parser.add_argument("--batch-size", type=int, default=BATCH_SIZE, help=f"Max PMC IDs per EFetch request (default: {BATCH_SIZE}, max 200)")
     parser.add_argument("--format", choices=["json", "summary"], default="summary", help="Output format (default: summary)")
     parser.add_argument("--output", "-o", help="Save to file")
     parser.add_argument("--api-key", help="NCBI API key")
@@ -459,10 +538,19 @@ Notes:
 
     args = parser.parse_args()
 
+    if args.batch_size < 1 or args.batch_size > 200:
+        args.batch_size = max(1, min(args.batch_size, 200))
+        print(f"Warning: --batch-size adjusted to {args.batch_size} (allowed 1-200)", file=sys.stderr)
+    if args.max_chars < 0:
+        args.max_chars = 0
+
     # Collect raw IDs
     raw_ids = list(args.ids)
     if args.file:
         raw_ids.extend(read_ids_from_file(args.file))
+
+    # Dedupe while preserving order
+    raw_ids = list(dict.fromkeys(raw_ids))
 
     if not raw_ids:
         print("Error: No IDs provided", file=sys.stderr)
@@ -470,6 +558,7 @@ Notes:
 
     api_key = get_api_key(args)
     body_mode = BODY_OUTLINE if args.outline else BODY_FULL
+    sections = [s.strip().lower() for s in (args.sections or "").split(",") if s.strip()] or None
     unavailable: List[str] = []
 
     try:
@@ -482,7 +571,8 @@ Notes:
             if not pmids:
                 print("Error: No valid PMIDs found", file=sys.stderr)
                 sys.exit(1)
-            print(f"Resolving {len(pmids)} PMIDs to PMCIDs...", file=sys.stderr)
+            if args.verbose:
+                print(f"Resolving {len(pmids)} PMIDs to PMCIDs...", file=sys.stderr)
             mapping = map_pmids_to_pmcids(pmids, api_key, args.verbose)
             pmcids = []
             for pmid, pmcid in mapping.items():
@@ -504,14 +594,17 @@ Notes:
         if not pmcids:
             print("Error: No valid PMC IDs to fetch", file=sys.stderr)
             # Still emit the unavailable notice in the chosen format
-            output = format_output([], args.format, body_mode, args.max_chars, args.abstract, unavailable)
+            output = format_output([], args.format, body_mode, args.max_chars, args.abstract,
+                                   unavailable, sections)
             print(output)
             sys.exit(1)
 
-        print(f"Fetching full text for {len(pmcids)} PMC article(s)...", file=sys.stderr)
+        if args.verbose:
+            print(f"Fetching full text for {len(pmcids)} PMC article(s)...", file=sys.stderr)
         articles = fetch_fulltext_batched(pmcids, api_key, args.batch_size, args.verbose)
 
-        output = format_output(articles, args.format, body_mode, args.max_chars, args.abstract, unavailable)
+        output = format_output(articles, args.format, body_mode, args.max_chars, args.abstract,
+                               unavailable, sections)
 
         if args.output:
             with open(args.output, "w", encoding="utf-8") as f:
@@ -521,13 +614,17 @@ Notes:
             print(output)
 
     except requests.exceptions.ConnectionError:
-        print("Error: 无法连接到 NCBI 服务器，请检查网络连接。", file=sys.stderr)
+        print("Error: cannot reach NCBI (network problem or blocked host).", file=sys.stderr)
         sys.exit(1)
     except requests.exceptions.Timeout:
-        print("Error: NCBI 服务器响应超时，请稍后重试或减少批次大小(--batch-size)。", file=sys.stderr)
+        print("Error: NCBI request timed out; retry or lower --batch-size.", file=sys.stderr)
         sys.exit(1)
     except requests.exceptions.HTTPError as e:
-        print(f"Error: NCBI 服务器返回错误: {e}", file=sys.stderr)
+        code = getattr(getattr(e, "response", None), "status_code", "?")
+        print(f"Error: NCBI HTTP {code}.", file=sys.stderr)
+        sys.exit(1)
+    except NCBIError as e:
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
         print(f"Error: {type(e).__name__}: {e}", file=sys.stderr)
