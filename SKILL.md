@@ -57,9 +57,9 @@ AI Agent 请按以下优先级判断使用哪个数据库：
 | 用户提到"文献/论文"时用 `--db pubmed` | 不要对含基因符号的查询直接路由到 Gene（先检查是否要查文献） |
 | 用户给 rsID 时用 `--db snp` | 不要用 `--db snp` 查非 SNP 内容 |
 | 不确定时默认用 PubMed | 不要同时查多个数据库（需分步执行） |
-| 初步搜索用 `--abstract none` 节省 token | 不要默认获取完整摘要再自己截断 |
-| 筛选阶段用 `--abstract preview`（默认） | 不要对大量结果都用 `--abstract full` |
-| 最终选定论文后用 `--abstract full` 或 `--full-abstract` | 不要假设摘要会自动截断到 200 字符（现为 1000） |
+| 初步搜索用 `--abstract none`（默认）节省 token | 不要默认获取完整摘要再自己截断 |
+| 筛选阶段显式加 `--abstract preview` | 不要对大量结果都用 `--abstract full` |
+| 最终选定论文后用 `--abstract full` 或 `--full-abstract` | 不要假设摘要会自动截断到 200 字符（preview 为 ~400 字符按句截断） |
 
 ---
 
@@ -86,7 +86,7 @@ AI Agent 请按以下优先级判断使用哪个数据库：
 
 | 脚本 | 功能 | 适用场景 |
 |------|------|---------|
-| `ncbi_search.py` | **主脚本**：多数据库智能搜索，自动意图识别，PubMed 使用 EFetch 获取完整摘要 | 大多数情况，推荐使用 |
+| `ncbi_search.py` | **主脚本**：多数据库智能搜索，自动意图识别；PubMed Tier1 用 ESummary，preview/full 用 EFetch | 大多数情况，推荐使用 |
 | `pubmed_search.py` | **PubMed 专用**：自然语言转检索式，MeSH 词识别（含多词短语） | 仅 PubMed 检索，需要智能解析 |
 | `pubmed_fetch.py` | **批量获取**：通过 PMID 列表批量获取文献详情，支持 200 PMID 分批 | 已有 PMID 列表，需要批量获取摘要 |
 | `pmc_fetch.py` | **PMC 全文获取**：EFetch(db=pmc) 下载开放获取文献全文，解析 JATS XML 为分节正文，支持 PMID 自动转 PMCID | 需要文献**正文全文**（而非仅摘要） |
@@ -218,7 +218,7 @@ PMC 全文同理：先 `--outline` 看结构，确认需要再取正文（默认
 | 错误 | 原因 | 处理方式 |
 |------|------|---------|
 | `HTTP 429` | 请求过于频繁 | 等待 1 秒后重试（自动处理） |
-| `HTTP 500/502/503/504` | 服务器/网关错误 | 自动重试 3 次 |
+| `HTTP 500/502/503/504` | 服务器/网关错误 | 自动重试 4 次 |
 | `ConnectionError` / `Timeout` | 网络问题 | 检查网络；减少结果数或重试（脚本输出友好提示） |
 | `0 results` | 无匹配结果 | 脚本自动打印提示（中文→英文 / 放宽过滤建议）；见 6.3 |
 | `ModuleNotFoundError: requests` | 依赖缺失 | `pip install requests` |
