@@ -141,10 +141,10 @@ python scripts/pubmed_search.py "APOE gene Alzheimer" --max 10 --abstract full -
 ## 9. 特殊查询
 
 - **批量 rsID**：`python scripts/ncbi_search.py "rs429358, rs7412" --db snp` → `429358[UID] OR 7412[UID]`（自动去重；仅当查询由 rsID 与分隔符组成时转换）。
-- **中文术语**：约 80 个常见生物医学中文词自动英译（阿尔茨海默病→Alzheimer disease、综述→review 等）；词表外中文保留原样并提示翻译。
 - **MeSH 校验**：`--mesh` 会先查 `db=mesh` 确认词存在，无效词打印警告后继续检索。
 - **年份区间**：`--min-year 2020 --max-year 2023` → `2020:2023[PDat]`；与 `--years` 同时给出时以区间为准。
 - **翻页**：`--max 10 --offset 10` 取第 11–20 条（基于 ESearch retstart）。
+- **综述筛选 CSV**：`--format csv`（仅 PubMed）输出 `rank,pmid,title,authors,journal,year,doi,url[,abstract]`，配合 `--offset` 分页批量导出。
 
 ## 10. 数据导出格式
 
@@ -152,4 +152,5 @@ python scripts/pubmed_search.py "APOE gene Alzheimer" --max 10 --abstract full -
 |------|---------|------|
 | **summary**（默认） | 人类阅读 | `--format summary` |
 | **JSON** | 程序处理 | `--format json` |
+| **CSV** | 综述筛选/表格分析（仅 PubMed） | `--format csv -o screening.csv` |
 | **保存到文件** | 持久化 | `-o filename.txt` |

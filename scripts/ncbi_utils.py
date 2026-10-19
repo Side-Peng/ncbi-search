@@ -90,10 +90,86 @@ def get_session():
     return SESSION
 
 
+def _shared_paths():
+    return (os.path.join(CACHE_DIR, "rate_state.json"),
+            os.path.join(CACHE_DIR, "rate_state.lock"))
+
+
+def _acquire_file_lock(lock_path: str, timeout: float = 10.0) -> bool:
+    """Create an exclusive lock file (stale locks older than 10 s are reclaimed)."""
+    deadline = time.time() + timeout
+    while True:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            return True
+        except FileExistsError:
+            try:
+                if time.time() - os.path.getmtime(lock_path) > 10:
+                    os.unlink(lock_path)
+                    continue
+            except OSError:
+                pass
+            if time.time() > deadline:
+                return False
+            time.sleep(0.02)
+        except OSError:
+            return False
+
+
+def _shared_rate_limit(interval: float) -> bool:
+    """Serialise requests across processes with a lock file + shared timestamp.
+
+    NCBI counts requests per IP (no key) or per API key (with key) globally,
+    so N parallel agent processes must share one token bucket; an in-process
+    sleep cannot see the other processes.
+    """
+    state_path, lock_path = _shared_paths()
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+    except OSError:
+        return False
+    if not _acquire_file_lock(lock_path):
+        return False
+    try:
+        last = 0.0
+        try:
+            with open(state_path, "r", encoding="utf-8") as fh:
+                last = float(json.load(fh).get("last", 0.0))
+        except Exception:
+            pass
+        now = time.time()
+        wait = interval - (now - last)
+        if wait > 0:
+            time.sleep(wait)
+            now = time.time()
+        try:
+            with open(state_path, "w", encoding="utf-8") as fh:
+                json.dump({"last": now}, fh)
+        except Exception:
+            pass
+        return True
+    finally:
+        try:
+            os.unlink(lock_path)
+        except OSError:
+            pass
+
+
 def rate_limit(api_key: Optional[str] = None):
-    """Enforce rate limiting (monotonic clock: NTP jumps cannot produce negative sleeps)."""
+    """Enforce rate limiting (shared across processes; monotonic in-process fallback).
+
+    NCBI counts 3 req/s per IP and 10 req/s per API key globally, so parallel
+    agent processes share the quota. Set NCBI_SHARED_RATELIMIT=0 to opt out.
+    """
     global LAST_REQUEST_TIME
     interval = 0.11 if api_key else MIN_REQUEST_INTERVAL
+    if os.environ.get("NCBI_SHARED_RATELIMIT", "1") != "0":
+        try:
+            if _shared_rate_limit(interval):
+                return
+        except Exception:
+            pass
     now = time.monotonic()
     elapsed = now - LAST_REQUEST_TIME
     if elapsed < interval:
@@ -220,124 +296,6 @@ def _looks_like_error_body(text: str) -> bool:
 def _error_text(text: str, limit: int = 300) -> str:
     plain = re.sub(r"<[^>]+>", " ", text[:5000])
     return " ".join(plain.split())[:limit]
-
-
-# Best-effort Chinese -> English mapping for common biomedical terms.
-# PubMed/Gene/... index English text only; a Chinese query otherwise returns 0.
-# Longest entries win ("阿尔茨海默病" before "阿尔茨海默", "蛋白质" before "蛋白").
-CHINESE_TERMS = {
-    # Diseases
-    "阿尔茨海默病": "Alzheimer disease",
-    "阿尔茨海默": "Alzheimer",
-    "帕金森病": "Parkinson disease",
-    "帕金森": "Parkinson",
-    "神经退行性疾病": "neurodegenerative disease",
-    "心血管疾病": "cardiovascular disease",
-    "慢性阻塞性肺疾病": "chronic obstructive pulmonary disease",
-    "多发性硬化": "multiple sclerosis",
-    "系统性红斑狼疮": "systemic lupus erythematosus",
-    "类风湿关节炎": "rheumatoid arthritis",
-    "冠心病": "coronary heart disease",
-    "心肌梗死": "myocardial infarction",
-    "心力衰竭": "heart failure",
-    "脑卒中": "stroke",
-    "中风": "stroke",
-    "糖尿病": "diabetes",
-    "高血压": "hypertension",
-    "抑郁症": "depression",
-    "精神分裂症": "schizophrenia",
-    "癫痫": "epilepsy",
-    "自闭症": "autism",
-    "肥胖": "obesity",
-    "哮喘": "asthma",
-    "肝硬化": "liver cirrhosis",
-    "肾衰竭": "kidney failure",
-    "骨质疏松": "osteoporosis",
-    "痛风": "gout",
-    "贫血": "anemia",
-    "白血病": "leukemia",
-    "淋巴瘤": "lymphoma",
-    "乳腺癌": "breast cancer",
-    "肺癌": "lung cancer",
-    "肝癌": "liver cancer",
-    "胃癌": "gastric cancer",
-    "结直肠癌": "colorectal cancer",
-    "前列腺癌": "prostate cancer",
-    "宫颈癌": "cervical cancer",
-    "癌症": "cancer",
-    "肿瘤标志物": "tumor marker",
-    "肿瘤": "tumor",
-    "癌": "cancer",
-    # Biology
-    "单核苷酸多态性": "single nucleotide polymorphism",
-    "神经退行性": "neurodegenerative",
-    "生物标志物": "biomarker",
-    "标志物": "marker",
-    "信号通路": "signaling pathway",
-    "通路": "pathway",
-    "转录组": "transcriptome",
-    "基因组": "genome",
-    "表观遗传": "epigenetics",
-    "蛋白质": "protein",
-    "蛋白": "protein",
-    "基因": "gene",
-    "突变": "mutation",
-    "变异": "variant",
-    "免疫": "immune",
-    "炎症": "inflammation",
-    "靶点": "target",
-    "细胞": "cell",
-    "组织": "tissue",
-    "血液": "blood",
-    "脑": "brain",
-    "心脏": "heart",
-    "肝脏": "liver",
-    "肾脏": "kidney",
-    "肺": "lung",
-    "人类": "human",
-    "小鼠": "mouse",
-    "大鼠": "rat",
-    "斑马鱼": "zebrafish",
-    "酵母": "yeast",
-    "果蝇": "fruit fly",
-    "线虫": "C. elegans",
-    # Methods / clinical
-    "随机对照试验": "randomized controlled trial",
-    "荟萃分析": "meta-analysis",
-    "Meta分析": "meta-analysis",
-    "临床试验": "clinical trial",
-    "病例报告": "case report",
-    "队列研究": "cohort study",
-    "横断面研究": "cross-sectional study",
-    "不良反应": "adverse event",
-    "安全性": "safety",
-    "机制": "mechanism",
-    "疗效": "efficacy",
-    "预后": "prognosis",
-    "诊断": "diagnosis",
-    "治疗": "treatment",
-    "药物": "drug",
-    "剂量": "dose",
-    "综述": "review",
-}
-
-_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
-
-
-def translate_chinese(query: str) -> str:
-    """Map common Chinese biomedical terms to English (best effort).
-
-    Unknown Chinese text is left untouched; callers can hint at translation.
-    """
-    if not _CJK_RE.search(query):
-        return query
-    result = query
-    for zh in sorted(CHINESE_TERMS, key=len, reverse=True):
-        if zh in result:
-            result = result.replace(zh, f" {CHINESE_TERMS[zh]} ")
-    for punct in "，、。；：（）【】":
-        result = result.replace(punct, " ")
-    return " ".join(result.split())
 
 
 def clean_xml_tags(text: str) -> str:

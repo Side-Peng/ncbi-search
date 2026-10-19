@@ -2,19 +2,24 @@
 
 ## Natural Language Conversion (pubmed_search.py)
 
-`pubmed_search.py` 自动将自然语言转换为标准检索式，采用**宽松策略**（v2 起）：MeSH 词和基因符号加字段标签，其他普通关键词原样传入，让 PubMed 搜索引擎自然处理，避免专有名词查询返回 0 篇。
+`pubmed_search.py` 将自然语言转换为 PubMed 检索式：**默认不强制字段标签**，识别出的概念（含 MeSH 主题词）统一作为裸关键词组传入，由 PubMed 的 **ATM（Automatic Term Mapping，自动语词映射）** 完成同义词扩展、MeSH 树扩展和最新文献召回。只有显式 `--mesh` 时才强制 `[MeSH]` 过滤。
 
-| 自然语言 | 转换后（v3 实际输出） | 说明 |
+为什么默认不标 `[MeSH]`：`[MeSH]` 会旁路 ATM 的裸词扩展，且刚上线尚未标引的文献（In-Process）没有 MeSH 标签，纯 MeSH 过滤会漏检；实测多个常见查询反而降召回。
+
+| 自然语言 | 转换后（3.0.0 实际输出） | 说明 |
 |---------|--------|------|
-| `Alzheimer disease` | `"Alzheimer Disease"[MeSH]` | 多词 MeSH 短语匹配 |
-| `APOE gene` | `APOE[Title/Abstract]`（`gene` 作为停用词剔除） | 识别为基因符号 |
-| `p-tau217 Abeta42 Alzheimer biomarker` | `"Alzheimer Disease"[MeSH] AND (p-tau217 Abeta42 biomarker)` | 连字符词整体保留；非MeSH词作为原始关键词组 |
-| `Smith J author Alzheimer` | `"Alzheimer Disease"[MeSH] AND Smith J[Author]` | 仅在线索词（author/by/written by）存在时才解析作者 |
+| `Alzheimer disease` | `(Alzheimer Disease)` | 裸关键词组，交 ATM 扩展（含 MeSH 同义词） |
+| `APOE gene` | `APOE[Title/Abstract]`（`gene` 作为停用词剔除） | 识别为基因符号（标题/摘要精确匹配） |
+| `p-tau217 Abeta42 Alzheimer biomarker` | `(p-tau217 Abeta42 biomarker Alzheimer Disease)` | 连字符词整体保留；概念词进关键词组 |
+| `Smith J author Alzheimer` | `(Alzheimer Disease) AND Smith J[Author]` | 仅在线索词（author/by/written by）存在时才解析作者 |
 | `last 5 years` | `2021/10/18:2026/10/17[PDat]`（滚动 N 年窗口） | 日期范围；日期按运行当天计算 |
 | `review` | `Review[pt]` | 文章类型（词边界匹配，不会误触 `industrial` 中的 `trial`） |
 | `Vitamin D deficiency` | `(Vitamin D deficiency)` | 作者正则不再误伤；单字母 D 保留 |
 | `alzheimer or parkinson` | `alzheimer OR parkinson` | 小写布尔词自动转大写并透传 |
-| `"blood-brain barrier" disruption` | `"blood-brain barrier" AND (disruption)` | 引号短语整体透传，不逐词标 MeSH |
+| `"blood-brain barrier" disruption` | `"blood-brain barrier" AND (disruption)` | 引号短语整体透传（注意：引号会关闭 ATM，只做字面短语匹配） |
+
+> **引号的代价**：加双引号后 PubMed 不再做 ATM 同义词扩展，同义写法（如 hypovitaminosis D）会漏检；仅对必须精确匹配的专有名词使用引号。
+> **最新文献**：刚发表、尚未 MeSH 标引的文献只能靠裸关键词命中，这也是默认不加强制 MeSH 的原因之一。
 
 ## Passing Manual Queries
 

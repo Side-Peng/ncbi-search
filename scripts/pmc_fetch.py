@@ -296,6 +296,30 @@ def parse_pmc_xml(xml_text: str) -> List[Dict[str, Any]]:
                 if abstract:
                     article["abstract"] = abstract
 
+            # License / copyright: PMC hosts OA (CC-BY etc.), author manuscripts
+            # and free-to-read-but-all-rights-reserved articles. JATS usually
+            # carries <ali:license_ref xlink:href> plus a human <license-p>;
+            # prefer the machine-readable reference, not their concatenation.
+            license_elem = front.find(".//license")
+            copyright_elem = front.find(".//copyright-statement")
+            if license_elem is not None:
+                ref = ""
+                for child in license_elem:
+                    if child.tag.endswith("license_ref"):
+                        ref = (child.get("{http://www.w3.org/1999/xlink}href")
+                               or (child.text or "").strip())
+                        break
+                if not ref:
+                    ref = license_elem.get("{http://www.w3.org/1999/xlink}href") or ""
+                if not ref:
+                    for child in license_elem:
+                        if child.tag.endswith("license-p"):
+                            ref = _clean(get_element_text(child))
+                            break
+                article["license"] = (ref or "license listed")[:200]
+            elif copyright_elem is not None:
+                article["license"] = "all rights reserved (non-OA)"
+
         # Body full text
         body = art.find("body")
         if body is not None:
@@ -477,6 +501,8 @@ def format_output(
         lines.append(f"Title: {article.get('title', 'N/A')}")
         if article.get("doi"):
             lines.append(f"DOI: {article['doi']}")
+        if article.get("license"):
+            lines.append(f"License: {article['license']}")
 
         if article.get("open_access"):
             lines.append(f"Full text: yes ({article.get('char_count', 0)} chars)")

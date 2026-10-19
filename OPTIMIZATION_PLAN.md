@@ -13,8 +13,9 @@
 - **翻页**：`--offset N` → ESearch `retstart`（不用 usehistory，避免 WebEnv 过期）；两个搜索脚本均支持，JSON 带 offset。
 - **中文自动英译**：`ncbi_utils.CHINESE_TERMS`（~80 词）+ `translate_chinese()`；两个入口均先翻译再解析；词表外中文保留并提示。
 - **MeSH 校验**：`--mesh` 先查 `db=mesh`，无效词打印警告（不阻塞检索）。
-- **测试**：新增 3 项 helper 测试（snp UID、date_filter、中文翻译），共 27 项全部通过。
-- **文档**：SKILL.md / parameters.md / README 同步新参数、中文支持、批量 rsID、翻页说明。
+- **测试**：新增 3 项 helper 测试（snp UID、date_filter、CSV），共 29 项全部通过。
+- **文档**：SKILL.md / parameters.md / README 同步新参数、批量 rsID、翻页说明。
+- **后续调整（按用户决定）**：中文自动英译（`CHINESE_TERMS`）已移除——中文查询改为提示 agent 直接翻译；MeSH 默认不强制标注（交给 ATM）；新增跨进程共享限速、CSV 导出、PMC license 解析。
 
 ---
 

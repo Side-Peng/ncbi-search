@@ -119,12 +119,13 @@
 |------|------|
 | `PMCID` / `PMID` | 双标识符 |
 | `Title` / `Authors` / `Journal` / `Year` / `DOI` | 元数据（作者前 3 位 + et al.） |
+| `License` | 从 JATS `<permissions>/<license>` 解析的授权链接/文本；无 license 节点时标注 `all rights reserved (non-OA)` |
 | `Full text` | `yes (N chars)` 或 `no (publisher blocked XML download)` |
 | `Abstract` | `none` / `preview`（~400 字符）/ `full` |
 | `Section Outline` | 章节大纲（`--outline`） |
 | `Full Text` | 分节正文（JATS 解析）；`--sections` 只保留匹配章节；`--max-chars` 截断 |
 
-> 非开放获取文献仅返回元数据+摘要并标注 `Full text: no`；不在 PMC 的 PMID 提示 `Not in PMC`。
+> PMC 托管内容不止 OA 子集（还有作者手稿、免费阅读但保留版权的文章）；EFetch 可能返回部分非 OA 全文 XML。机器阅读/再分发前请核对 `License` 字段（OA 子集内也有 CC-BY 与 CC-BY-NC-ND 等差异）。不在 PMC 的 PMID 提示 `Not in PMC`。
 
 ## 10. 结果排序规则（PubMed）
 

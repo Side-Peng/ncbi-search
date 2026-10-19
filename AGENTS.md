@@ -9,14 +9,14 @@
 - `scripts/pubmed_fetch.py` — 按 PMID 批量获取（每批 200，自动去重）
 - `scripts/pmc_fetch.py` — PMC 开放获取全文（JATS 解析；ELink 批量 PMID→PMCID；默认截断 6000 字符）
 - `scripts/ncbi_utils.py` — 共享层：HTTP（重试/限速/缓存/错误体检测/工具标识）、按句摘要截断、PubMed XML 解析
-- `scripts/test_ncbi.py` — 离线单元测试（27 项）
+- `scripts/test_ncbi.py` — 离线单元测试（29 项）
 - `references/` — 参数、检索式、结果字段文档
 - `dist/` — 打包目录；发布前必须与 `scripts/`、`SKILL.md` 同步
 
 ## 运行
 
 - 依赖：Python 3.7+，仅 `requests`。
-- 环境变量（均可选）：`NCBI_API_KEY`（10 req/s，无 Key 为 3 req/s）、`NCBI_EMAIL`（合规标识）、`NCBI_NO_CACHE=1`（禁用缓存）、`NCBI_CACHE_EXPIRE_HOURS`（默认 24）、`NCBI_CACHE_MAX_ROWS`（默认 5000）。
+- 环境变量（均可选）：`NCBI_API_KEY`（10 req/s，无 Key 为 3 req/s）、`NCBI_EMAIL`（合规标识）、`NCBI_NO_CACHE=1`（禁用缓存）、`NCBI_CACHE_EXPIRE_HOURS`（默认 24）、`NCBI_CACHE_MAX_ROWS`（默认 5000）、`NCBI_SHARED_RATELIMIT=0`（关闭跨进程文件锁限速）。
 
 ## 测试与验收
 
@@ -26,7 +26,7 @@ python -m unittest scripts/test_ncbi.py -v
 
 任何修改后必须：
 1. `python -m py_compile scripts/*.py` 通过；
-2. 全部单测通过（27 项）；
+2. 全部单测通过（29 项）；
 3. 同步 `dist/` 与已安装技能目录 `C:\Users\13049\.agents\skills\ncbi-search`（三处 SHA256 一致）；
 4. 输出格式改动需在真实 API 上抽查至少 1 条（缓存可命中，注意限速）。
 

@@ -109,18 +109,20 @@ python scripts/ncbi_search.py "alzheimer" --db pubmed --min-year 2020 --max-year
 python scripts/ncbi_search.py "alzheimer" --db pubmed --max 10 --offset 10   # 翻页：跳过前 10 条
 python scripts/ncbi_search.py "rs429358, rs7412" --db snp --max 5            # 批量 rsID
 
-# PubMed 自然语言智能检索（宽松策略：MeSH/基因符号加标签，普通词原样传入）
+# PubMed 自然语言智能检索（默认不强制字段标签，交给 PubMed ATM 自动映射）
 python scripts/pubmed_search.py "Alzheimer disease cerebrovascular mechanisms"
 python scripts/pubmed_search.py "APOE gene and Alzheimer disease" --years 5
 python scripts/pubmed_search.py "Smith J author Alzheimer" --max 20
 python scripts/pubmed_search.py "cancer immunotherapy" --mesh "Neoplasms" --years 3 --sort pub_date
 
+# 综述筛选：导出 CSV（rank,pmid,title,authors,journal,year,doi,url[,abstract]）
+python scripts/pubmed_search.py "alzheimer biomarker" --max 50 --abstract preview --format csv -o screening.csv
+
 # 特殊字符（连字符等）均可
 python scripts/ncbi_search.py "IL-6 gene" --db gene
 
-# 用户用中文提问时：常见术语自动英译（词表覆盖 ~80 个高频词；词表外需手动翻译）
-python scripts/ncbi_search.py "阿尔茨海默病 综述"   # → "Alzheimer Disease"[MeSH] AND Review[pt]
-python scripts/ncbi_search.py "Alzheimer disease review" --db pubmed   # 等价写法（推荐）
+# 用户用中文提问时：PubMed 只索引英文，需译为英文查询（0 结果时脚本会提示）
+python scripts/ncbi_search.py "Alzheimer disease review" --db pubmed
 ```
 
 ### 3.2 批量获取（pubmed_fetch.py）
@@ -171,9 +173,9 @@ python scripts/pmc_fetch.py PMC8241728 --format json -o fulltext.json
 | `--offset N` | 搜索类 | 跳过前 N 条结果（翻页，如 `--max 10 --offset 10`） |
 | `--type review/...` | 仅 pubmed | 文章类型过滤 |
 | `--organism <sp>` | 仅 gene | 物种过滤（human→Homo sapiens 等自动映射） |
-| `--mesh` | 仅 pubmed | MeSH 主题词筛选（无效词会打印警告） |
+| `--mesh` | 仅 pubmed | MeSH 主题词筛选（唯一强制 `[MeSH]` 的入口；无效词会打印警告） |
 | `--sort relevance/pub_date/Author/Journal` | 仅 pubmed | 排序方式（默认 relevance） |
-| `--format summary/json`、`-o <file>` | 全部 | 输出格式与保存 |
+| `--format summary/json/csv`、`-o <file>` | 全部 | 输出格式与保存（csv 仅 PubMed，用于综述筛选） |
 | `--count-only` | 搜索类 | 只输出命中数（不抓取记录，最省 token） |
 | `--pmid` | pmc_fetch | 输入按 PMID 处理，经 ELink 批量转 PMCID |
 | `--outline` / `--max-chars N` / `--sections` | pmc_fetch | 仅章节大纲 / 截断正文到 N 字符（默认 6000，0=不限）/ 只取匹配章节（逗号分隔） |
@@ -243,6 +245,8 @@ PMC 全文同理：先 `--outline` 看结构，确认需要再取正文（默认
 
 - **缓存**: ESearch/ESummary/EFetch 响应自动缓存到技能目录 `.ncbi_cache/cache.db`，有效期默认 24 小时（`NCBI_CACHE_EXPIRE_HOURS` 可调）；`NCBI_NO_CACHE=1` 强制实时请求；`NCBI_CACHE_MAX_ROWS`（默认 5000）限制缓存行数。
 - **错误响应不缓存**: HTTP 200 + ERROR XML 会直接报错，不会污染缓存。
+- **跨进程限速**: NCBI 按 IP/API Key 全局计数，脚本用文件锁 + 共享时间戳串行化多进程请求（`NCBI_SHARED_RATELIMIT=0` 可关闭）。
+- **合规标识**: 请求携带 `tool=ncbi-search`；建议设置 `NCBI_EMAIL`，异常限流时 NCBI 可邮件联系而非直接封 IP。
 - **API Key**: 环境变量 `NCBI_API_KEY` 或 `--api-key` 传入。免费获取：注册 [NCBI 账号](https://www.ncbi.nlm.nih.gov/account/) → Settings → API Key Management。无 Key 也能用（限 3 次/秒）。
 
 ```powershell
@@ -271,7 +275,7 @@ ncbi-search/
 ├── README.md                   # 用户文档
 ├── scripts/
 │   ├── ncbi_search.py          # 主脚本：多数据库智能搜索（PubMed 用 EFetch）
-│   ├── pubmed_search.py        # PubMed 专用：自然语言转检索式（宽松策略 + ElementTree）
+│   ├── pubmed_search.py        # PubMed 专用：自然语言转检索式（ATM 优先 + ElementTree）
 │   ├── pubmed_fetch.py         # 批量获取：分批处理 + 完整摘要
 │   ├── pmc_fetch.py            # PMC 全文获取：EFetch db=pmc + JATS 解析（PMID 自动转 PMCID）
 │   ├── ncbi_utils.py           # 工具函数（缓存 + 编码修复 + ElementTree 辅助）
@@ -285,7 +289,7 @@ ncbi-search/
 
 ---
 
-**版本**: v3.0.0
+**版本**: 3.0.0
 **技能状态**: 就绪
 **API 要求**: NCBI API Key（免费，推荐配置）
 **费用**: 完全免费

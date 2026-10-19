@@ -30,7 +30,7 @@
 - 🚀 **速率优化** - 自动重试、智能限流、支持高并发
 - 🛡️ **Windows 编码安全** - 自动处理 GBK/UTF-8 编码，不再因特殊字符崩溃
 - 🔀 **排序与分批** - `--sort` 按相关性/日期排序，批量 PMID 自动分批处理；支持 `--min-year/--max-year` 年份区间与 `--offset` 翻页
-- 🀄 **中文术语** - 常见生物医学中文词自动英译（阿尔茨海默病→Alzheimer disease），词表外自动提示
+- 📊 **CSV 导出** - `--format csv` 导出 rank/PMID/标题/作者/期刊/年份/DOI/URL/摘要，便于综述筛选
 - 🧬 **批量 rsID** - `--db snp` 支持逗号分隔的多个 rsID（如 APOE rs429358, rs7412），一次精确取回
 - 🧪 **单元测试覆盖** - 内置自动化测试套件
 
@@ -405,14 +405,14 @@ python scripts/test_ncbi.py
 
 ### 📋 更新日志
 
-#### v3.0.0 (2026-10-17) — 准确性与 token 效率重构
+#### 3.0.0 (2026-10-17) — 准确性与 token 效率重构
 
-- ✅ **准确性**：作者线索词门控、小写布尔映射、类型词边界、连字符/引号短语、解剖词不标 MeSH、年份→`[PDat]`、路由重写、Gene `[Gene Name]`、dbSNP `[UID]`
+- ✅ **准确性**：作者线索词门控、小写布尔映射、类型词边界、连字符/引号短语、MeSH 默认不强制标注（交给 ATM）、年份→`[PDat]`、路由重写、Gene `[Gene Name]`、dbSNP `[UID]`/`[RS]` 回退
 - ✅ **Token**：默认 `--abstract none`、JSON 分级裁剪、按句摘要截断（结论优先）、PMC 默认 6000 字符、`--sections`
-- ✅ **效率**：ELink 批量、NCBI 错误体不缓存、Tier1 改 ESummary v2.0、SQLite WAL、tool/email 合规标识
-- ✅ **功能**：`--count-only`、`--offset` 翻页、`--min-year/--max-year`、批量 rsID、中文术语自动英译、MeSH 校验、各库专用格式化
+- ✅ **效率**：ELink 批量、NCBI 错误体不缓存、Tier1 改 ESummary v2.0、SQLite WAL、跨进程共享限速（文件锁）、tool/email 合规标识
+- ✅ **功能**：`--count-only`、`--offset` 翻页、`--min-year/--max-year`、批量 rsID、CSV 导出、MeSH 校验、PMC license 解析、各库专用格式化
 - ⚠️ **破坏性变更**：默认输出层级与紧凑格式、JSON 字段调整（`total`/`id`/`offset`）
-- ✅ 文档同步（SKILL/parameters/result_format/AGENTS）+ 新增 OPTIMIZATION_PLAN.md；单测 7→27 项
+- ✅ 文档同步（SKILL/parameters/result_format/AGENTS）+ 新增 OPTIMIZATION_PLAN.md；单测 7→29 项
 
 #### v2.0.2 (2026-08-02) — PMC 全文获取与 EFetch 分批
 
@@ -613,14 +613,14 @@ export NCBI_NO_CACHE=1
 
 ### 📋 Changelog
 
-#### v3.0.0 (2026-10-17) — Accuracy & token-efficiency refactor
+#### 3.0.0 (2026-10-17) — Accuracy & token-efficiency refactor
 
-- ✅ **Accuracy**: clue-word-gated author parsing, lower-case boolean mapping, type word boundaries, hyphen/quote phrase preservation, anatomy terms no longer MeSH-tagged, year → `[PDat]`, routing rewrite, Gene `[Gene Name]`, dbSNP `[UID]`
+- ✅ **Accuracy**: clue-word-gated author parsing, lower-case boolean mapping, type word boundaries, hyphen/quote phrase preservation, MeSH tagging off by default (leave it to ATM), year → `[PDat]`, routing rewrite, Gene `[Gene Name]`, dbSNP `[UID]`/`[RS]` fallback
 - ✅ **Tokens**: default `--abstract none`, tier-aware JSON trimming, sentence-aware abstract preview (conclusions first), PMC 6000-char default, `--sections`
-- ✅ **Efficiency**: batched ELink, NCBI error bodies never cached, Tier-1 ESummary v2.0, SQLite WAL, tool/email identification
-- ✅ **Features**: `--count-only`, `--offset` paging, `--min-year/--max-year`, batch rsIDs, Chinese term auto-translation, MeSH validation, per-database formatters
+- ✅ **Efficiency**: batched ELink, NCBI error bodies never cached, Tier-1 ESummary v2.0, SQLite WAL, cross-process shared rate limiting (file lock), tool/email identification
+- ✅ **Features**: `--count-only`, `--offset` paging, `--min-year/--max-year`, batch rsIDs, CSV export, MeSH validation, PMC license parsing, per-database formatters
 - ⚠️ **Breaking**: default output tier/format and JSON fields (`total`/`id`/`offset`)
-- ✅ Docs synced (SKILL/parameters/result_format/AGENTS) + OPTIMIZATION_PLAN.md; tests 7→27
+- ✅ Docs synced (SKILL/parameters/result_format/AGENTS) + OPTIMIZATION_PLAN.md; tests 7→29
 
 #### v2 (2026-07-08)
 

@@ -8,12 +8,12 @@ Usage:
     python pubmed_search.py "your query" [options]
 
 Features:
-    - Natural language to PubMed query conversion (lenient approach)
-    - MeSH term recognition and expansion (including multi-word phrases)
-    - Smart field mapping (Title/Abstract, Author, Journal)
+    - Natural language to PubMed query conversion (ATM-first: no forced field tags)
+    - Concept recognition (MeSH vocabulary, genes, authors) used as plain keywords
     - Date filtering
     - Article type filtering
-    - Tiered abstract display: none (titles only), preview (1000 chars), full (complete)
+    - Tiered abstract display: none (titles only), preview (~400 chars), full (complete)
+    - CSV export for systematic-review screening
 """
 
 import os
@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     from ncbi_utils import (
         http_get, get_element_text, parse_pubmed_xml, truncate_abstract,
-        NCBIError, PREVIEW_CHARS, date_filter, translate_chinese,
+        NCBIError, PREVIEW_CHARS, date_filter,
     )
 except ImportError:
     print("Error: Could not import ncbi_utils.py from the scripts directory.", file=sys.stderr)
@@ -186,15 +186,6 @@ _LAST_YEARS_RE = re.compile(r"\blast\s+(\d+)\s+years?\b", re.IGNORECASE)
 _TOKEN_RE = re.compile(r"[\w][\w-]*", re.UNICODE)
 _QUOTE_RE = re.compile(r'"([^"]+)"')
 
-# Article type filters (shared with ncbi_search.py)
-TYPE_FILTER = {
-    "review": "Review[pt]",
-    "clinical_trial": "Clinical Trial[pt]",
-    "randomized": "Randomized Controlled Trial[pt]",
-    "meta_analysis": "Meta-Analysis[pt]",
-    "case_report": "Case Reports[pt]",
-}
-
 
 def detect_query_elements(query: str) -> Dict[str, Any]:
     """Detect and categorize elements in a natural-language query.
@@ -347,12 +338,17 @@ def build_pubmed_query(
         parts.append(f"{gene}[Title/Abstract]")
         explanation.append(f"Gene {gene}")
 
+    # Detected MeSH concepts are passed through as plain keywords and left to
+    # PubMed's automatic term mapping (ATM): ATM expands entry terms + tree and
+    # still finds recently indexed / not-yet-indexed records. Explicit [MeSH]
+    # tagging is opt-in via --mesh only (it bypasses ATM and loses recall).
+    keywords = list(elements.get("terms", []))
     for mesh in elements.get("mesh", []):
-        parts.append(f'"{mesh}"[MeSH]')
-        explanation.append(f"MeSH {mesh}")
+        if mesh not in keywords:
+            keywords.append(mesh)
 
-    if elements.get("terms"):
-        kw = " ".join(elements["terms"])
+    if keywords:
+        kw = " ".join(keywords)
         parts.append(f"({kw})")
         explanation.append(f"Keywords: {kw}")
 
@@ -470,6 +466,51 @@ def trim_json_article(article: Dict[str, Any], mode: str) -> Dict[str, Any]:
     return rec
 
 
+def format_csv_output(
+    articles: List[Dict[str, Any]],
+    total_count: int,
+    query: str,
+    effective_mode: str,
+    offset: int = 0,
+) -> str:
+    """CSV export for systematic-review screening (one row per record).
+
+    Columns: rank, pmid, title, authors (all), journal, year, doi, url, and
+    abstract when the tier is not 'none'.
+    """
+    import csv
+    import io
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    header = ["rank", "pmid", "title", "authors", "journal", "year", "doi", "url"]
+    if effective_mode != ABSTRACT_NONE:
+        header.append("abstract")
+    writer.writerow(header)
+
+    for i, article in enumerate(articles, 1):
+        pmid = article.get("pmid", "")
+        authors = "; ".join(article.get("authors") or [])
+        row = [
+            offset + i,
+            pmid,
+            article.get("title", ""),
+            authors,
+            article.get("journal", ""),
+            article.get("year", ""),
+            article.get("doi", ""),
+            article.get("url") or f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+        ]
+        if effective_mode != ABSTRACT_NONE:
+            abstract = article.get("abstract") or ""
+            if effective_mode == ABSTRACT_PREVIEW:
+                abstract = truncate_abstract(abstract)
+            row.append(abstract)
+        writer.writerow(row)
+
+    return buf.getvalue()
+
+
 def format_output(
     articles: List[Dict[str, Any]],
     total_count: int,
@@ -487,6 +528,9 @@ def format_output(
     omitted from summary output (JSON keeps it).
     """
     effective_mode = ABSTRACT_FULL if full_abstract else abstract_mode
+
+    if format == "csv":
+        return format_csv_output(articles, total_count, query, effective_mode, offset)
 
     if format == "json":
         output = {
@@ -582,7 +626,7 @@ def main():
     parser.add_argument("--full-abstract", action="store_true", help="显示完整摘要（不截断）[等同 --abstract full]")
     parser.add_argument("--abstract", choices=ABSTRACT_CHOICES, default=DEFAULT_ABSTRACT_MODE,
                         help="摘要显示级别: none(仅标题元数据, 默认), preview(~400字符按句截断), full(完整摘要)")
-    parser.add_argument("--format", choices=["json", "summary"], default="summary", help="输出格式")
+    parser.add_argument("--format", choices=["json", "summary", "csv"], default="summary", help="输出格式")
     parser.add_argument("--count-only", action="store_true", help="只输出命中数（不抓取记录）")
     parser.add_argument("--output", "-o", help="保存到文件")
     parser.add_argument("--api-key", help="NCBI API key")
@@ -603,10 +647,7 @@ def main():
     api_key = get_api_key(args)
     
     try:
-        # Translate common Chinese terms before parsing the query
-        query_text = translate_chinese(args.query)
-        if args.verbose:
-            print(f"翻译后查询: {query_text}", file=sys.stderr)
+        query_text = args.query
 
         # Detect query elements
         elements = detect_query_elements(query_text)

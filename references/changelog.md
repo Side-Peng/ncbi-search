@@ -2,20 +2,21 @@
 
 > 版本历史存档。了解功能演进时查阅，运行时无需读取。
 
-## v3.0.0 (2026-10-17) — 检索准确性与 token 效率重构
+## 3.0.0 (2026-10-17) — 检索准确性与 token 效率重构
 
 **破坏性变更（默认行为）**
 - 默认摘要层级改为 `none`（仅标题+元数据）；`preview` 改为按句截断 ~400 字符（结论优先）
 - 输出改为紧凑单行格式：去掉 URL 行与装饰分隔线；MeSH/DOI 仅在 `--abstract full` 输出
 - JSON 结构变化：`total_count`→`total`、`_id`→`id`、去掉 `search_date`/`query_explanation`、新增分页 `offset`
+- MeSH 默认不再强制标注：概念词交给 PubMed ATM（自动语词映射）；`--mesh` 是唯一强制 `[MeSH]` 的入口
 
 **准确性修复**
 - 作者解析仅在线索词（author/by）出现时触发：`Vitamin D deficiency` 3→44,191 条
 - 小写布尔词映射 `OR/AND/NOT`；文章类型改词边界匹配；连字符/引号短语整体保留
 - 解剖词不再强标 `[MeSH]`（`brain tumor treatment` 39,754→148,464）；年份→`[PDat]`
 - 多库路由重写：移除裸 `rs` 关键词、泛基因正则收紧、文献词优先；`blood pressure` 等正确落 PubMed
-- Gene 库用 `[Gene Name]` + 学名映射（`APOE` 1,401 条文本噪音→409 个真实基因；`--organism human`→1 条）
-- dbSNP 纯 rsID 走 `[UID]`（排除 merged 旧记录），支持批量 rsID（`rs429358, rs7412`）
+- Gene 库用 `[Gene Name]` + 学名映射（`APOE` 1,401 条文本噪音→409 个真实基因；`--organism human`→1 条）；结果把与输入完全一致的官方符号排在首位
+- dbSNP 纯 rsID 走 `[UID]`（排除 merged 旧记录），0 命中时回退 `[RS]`；支持批量 rsID（`rs429358, rs7412`）
 
 **效率与健壮性**
 - PMID→PMCID 改 ELink 批量（≤200/次，约 100 倍提速）
@@ -24,16 +25,19 @@
 - SQLite WAL + busy_timeout + 容量上限（`NCBI_CACHE_MAX_ROWS`）；重试 4 次且尊重 Retry-After
 - 所有请求携带 `tool=ncbi-search`（可选 `NCBI_EMAIL`）；错误信息不再回显 api_key
 - `--max`/`--batch-size` 钳制；`sort` 仅对 PubMed 发送
+- 跨进程共享限速（文件锁 + 共享时间戳）：NCBI 按 IP/Key 全局计数，多 agent 并发不再突破 3/s / 10/s
 
 **新功能**
 - `--count-only`（只取命中数）、`--offset`（翻页）、`--min-year/--max-year`（年份区间）
-- `--sections`（PMC 只取指定章节）、中文术语自动英译（~80 词）、`--mesh` 在线校验
+- `--sections`（PMC 只取指定章节）、`--mesh` 在线校验
+- `--format csv`（PubMed）：综述筛选导出 `rank,pmid,title,authors,journal,year,doi,url[,abstract]`
+- PMC 解析 `<permissions>/<license>`，输出 License 字段（OA 子集内也有 CC-BY / CC-BY-NC-ND 差异）
 - 各库专用单行输出（ClinVar/SRA/Assembly/BioSample/Taxonomy/dbSNP 字段增强）
 
 **文档与测试**
 - SKILL.md 瘦身：~700 行 → ~300 行，参数表/查询语法/结果解析/更新日志拆分到 `references/`（渐进披露，降低每次触发 token 开销）
 - SKILL/parameters/result_format/README/AGENTS 全面同步；新增 OPTIMIZATION_PLAN.md
-- 单测 7→27 项（转换层回归、各库格式化、sections、helper）
+- 单测 7→29 项（转换层回归、各库格式化、sections、CSV、license、共享限速）
 
 ## v2.0.2 (2026-08-02) — PMC 全文获取与 EFetch 分批
 

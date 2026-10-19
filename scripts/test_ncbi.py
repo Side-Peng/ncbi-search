@@ -257,7 +257,9 @@ class TestQueryConversion(unittest.TestCase):
         output = self.convert("Alzheimer last 5 years")
         self.assertNotIn("(last years)", output)
         self.assertIn("[PDat]", output)
-        self.assertIn('"Alzheimer Disease"[MeSH]', output)
+        # ATM strategy: concepts pass through as keywords, no forced [MeSH]
+        self.assertIn("Alzheimer Disease", output)
+        self.assertNotIn("[MeSH]", output)
         output2 = self.convert("APOE gene and Alzheimer disease")
         self.assertNotIn("(gene)", output2)
 
@@ -397,7 +399,7 @@ class TestFormatters(unittest.TestCase):
 
 
 class TestQueryHelpers(unittest.TestCase):
-    """Helpers added in P4: batch rsIDs, year ranges, Chinese translation."""
+    """Helpers added in P4: batch rsIDs, year ranges, CSV export, license."""
 
     def test_snp_uid_term(self):
         from ncbi_search import _snp_uid_term
@@ -415,13 +417,51 @@ class TestQueryHelpers(unittest.TestCase):
         self.assertIsNone(date_filter(None, None, None))
         self.assertIn("[PDat]", date_filter(5, None, None))
 
-    def test_chinese_translation(self):
-        from ncbi_utils import translate_chinese
-        out = translate_chinese("阿尔茨海默病 综述")
-        self.assertIn("Alzheimer disease", out)
-        self.assertIn("review", out)
-        self.assertEqual(translate_chinese("APOE"), "APOE")
-        self.assertEqual(translate_chinese("焦亡"), "焦亡")
+    def test_csv_export(self):
+        from pubmed_search import format_csv_output
+        articles = [{"pmid": "1", "title": "T1", "authors": ["A B", "C D"],
+                     "journal": "J", "year": "2020", "doi": "10.1/x",
+                     "url": "https://pubmed.ncbi.nlm.nih.gov/1/",
+                     "abstract": "x" * 600}]
+        out = format_csv_output(articles, 1, "q", "none")
+        header = out.splitlines()[0]
+        self.assertEqual(header, "rank,pmid,title,authors,journal,year,doi,url")
+        self.assertIn("A B; C D", out)
+        self.assertIn("1,T1", out)
+        out2 = format_csv_output(articles, 1, "q", "preview")
+        self.assertTrue(out2.splitlines()[0].endswith(",abstract"))
+        self.assertIn("...", out2)
+
+    def test_pmc_license_parsing(self):
+        from pmc_fetch import parse_pmc_xml
+        xml = """<?xml version="1.0"?><pmc-articleset><article xmlns:xlink="http://www.w3.org/1999/xlink">
+          <front><article-meta>
+            <article-id pub-id-type="pmcid">PMC1</article-id>
+            <permissions>
+              <copyright-statement>© 2021 Test</copyright-statement>
+              <license license-type="open-access">
+                <license_ref xlink:href="https://creativecommons.org/licenses/by/4.0/">https://creativecommons.org/licenses/by/4.0/</license_ref>
+                <license-p>This is an open access article.</license-p>
+              </license>
+            </permissions>
+          </article-meta></front></article></pmc-articleset>"""
+        articles = parse_pmc_xml(xml)
+        self.assertEqual(articles[0].get("license"),
+                         "https://creativecommons.org/licenses/by/4.0/")
+
+    def test_shared_rate_limiter(self):
+        import ncbi_utils
+        import tempfile
+        old = ncbi_utils.CACHE_DIR
+        with tempfile.TemporaryDirectory() as tmp:
+            ncbi_utils.CACHE_DIR = tmp
+            try:
+                start = time.time()
+                self.assertTrue(ncbi_utils._shared_rate_limit(0.15))
+                self.assertTrue(ncbi_utils._shared_rate_limit(0.15))
+                self.assertGreaterEqual(time.time() - start, 0.14)
+            finally:
+                ncbi_utils.CACHE_DIR = old
 
 
 if __name__ == "__main__":

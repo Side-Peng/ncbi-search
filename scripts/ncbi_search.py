@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     from ncbi_utils import (
         http_get, get_element_text, parse_pubmed_xml, truncate_abstract,
-        NCBIError, PREVIEW_CHARS, date_filter, translate_chinese,
+        NCBIError, PREVIEW_CHARS, date_filter,
     )
 except ImportError:
     print("Error: Could not import ncbi_utils.py from the scripts directory.", file=sys.stderr)
@@ -846,6 +846,41 @@ FORMATTERS = {
 }
 
 
+def format_csv_pubmed(records: List[Dict], mode: str, offset: int = 0) -> str:
+    """CSV export for systematic-review screening (PubMed records)."""
+    import csv
+    import io
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    header = ["rank", "pmid", "title", "authors", "journal", "year", "doi", "url"]
+    if mode != ABSTRACT_NONE:
+        header.append("abstract")
+    writer.writerow(header)
+
+    for i, record in enumerate(records, 1):
+        pmid = record.get("pmid", record.get("_id", ""))
+        authors = "; ".join(record.get("authors") or [])
+        row = [
+            offset + i,
+            pmid,
+            record.get("title", ""),
+            authors,
+            record.get("journal", ""),
+            record.get("year", ""),
+            record.get("doi", ""),
+            record.get("url") or f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
+        ]
+        if mode != ABSTRACT_NONE:
+            abstract = record.get("abstract") or ""
+            if mode == ABSTRACT_PREVIEW:
+                abstract = truncate_abstract(abstract)
+            row.append(abstract)
+        writer.writerow(row)
+
+    return buf.getvalue()
+
+
 def format_results(records: List[Dict], total: int, query: str, database: str, full_abstract: bool = False, abstract_mode: str = DEFAULT_ABSTRACT_MODE) -> str:
     """Format results based on database type."""
     if database == "pubmed":
@@ -898,7 +933,7 @@ Examples:
     parser.add_argument("--full-abstract", action="store_true", help="Show full abstracts without truncation (PubMed only) [same as --abstract full]")
     parser.add_argument("--abstract", choices=ABSTRACT_CHOICES, default=DEFAULT_ABSTRACT_MODE,
                         help="Abstract tier: none(title+metadata, default), preview(~400 chars), full(complete)")
-    parser.add_argument("--format", choices=["json", "summary"], default="summary")
+    parser.add_argument("--format", choices=["json", "summary", "csv"], default="summary")
     parser.add_argument("--count-only", action="store_true", help="Only print the result count (no record fetch)")
     parser.add_argument("--output", "-o", help="Save to file")
     parser.add_argument("--api-key", help="NCBI API key")
@@ -926,11 +961,9 @@ Examples:
             print(f"Database: {DATABASES[database]['name']}", file=sys.stderr)
             print(f"Query: {args.query}", file=sys.stderr)
         
-        # Build query with filters (common Chinese terms -> English first)
-        query = translate_chinese(args.query)
+        # Build query with filters
+        query = args.query
         base_query = query
-        if args.verbose and query != args.query:
-            print(f"Translated query: {query}", file=sys.stderr)
         
         # PubMed-specific filters
         if database == "pubmed":
@@ -946,14 +979,17 @@ Examples:
 
         # dbSNP: bare rsIDs must be searched by UID; free text also matches
         # old IDs merged into them (merged=1 records).
+        snp_term = None
         if database == "snp":
             snp_term = _snp_uid_term(args.query)
             if snp_term:
                 query = snp_term
 
         # Search (Gene DB: use [Gene Name] for bare symbols, fall back to free text)
+        gene_symbol = None
         if database == "gene":
             symbol = _gene_field_symbol(query)
+            gene_symbol = symbol
             if symbol:
                 term = f"{symbol}[Gene Name]"
                 if args.organism:
@@ -970,6 +1006,15 @@ Examples:
                 search_result = search_database(query, "gene", args.max, api_key, args.organism, args.sort, args.verbose, offset=args.offset)
         else:
             search_result = search_database(query, database, args.max, api_key, args.organism, args.sort, args.verbose, offset=args.offset)
+            # dbSNP fallback: a merged-away rsID may not resolve via [UID];
+            # retry with the RefSNP field [RS] before giving up.
+            if database == "snp" and snp_term and search_result["count"] == 0:
+                rs_fallback = " OR ".join(
+                    part.replace("[UID]", "[RS]") for part in snp_term.split(" OR ")
+                )
+                search_result = search_database(rs_fallback, "snp", args.max, api_key, None, args.sort, args.verbose, offset=args.offset)
+                if search_result["count"]:
+                    query = rs_fallback
         ids = search_result["ids"]
         total = search_result["count"]
         
@@ -990,9 +1035,24 @@ Examples:
                 records = fetch_pubmed_articles(ids, api_key, args.verbose) if ids else []
         else:
             records = fetch_summary(ids, database, api_key, args.verbose) if ids else []
-        
+
+        # Gene: put the exact official symbol first (aliases may match too)
+        if database == "gene" and gene_symbol:
+            records.sort(key=lambda r: 0 if str(r.get("name", "")).lower() == gene_symbol.lower() else 1)
+
         # Format output
-        if args.format == "json":
+        if args.format == "csv":
+            if database != "pubmed":
+                print("Warning: CSV export is PubMed-only; falling back to JSON.", file=sys.stderr)
+                output = json.dumps({
+                    "database": database,
+                    "query": query,
+                    "total": total,
+                    "records": [trim_json_record(r, effective_mode) for r in records],
+                }, separators=(",", ":"), ensure_ascii=False)
+            else:
+                output = format_csv_pubmed(records, effective_mode, args.offset)
+        elif args.format == "json":
             payload = {
                 "database": database,
                 "query": query,
